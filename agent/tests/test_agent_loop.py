@@ -1,0 +1,378 @@
+"""Agent 循环测试（设计第 7.2.3 节，第 3 层测试——最有价值）。
+
+用 FakeLLM 精确控制 LLM 输出，验证 Agent 循环所有行为分支。
+零费用、确定、能覆盖所有情况。
+
+关键覆盖点：
+- 直接回答（不调工具）
+- 调工具后回答（循环 2 次）
+- 达到 MAX_STEPS 安全阀
+- 工具失败自我恢复（设计 3.9 / 6.6）
+- 幻觉调用不存在的工具
+- 工具结果正确进入历史
+- 回调被正确触发
+"""
+
+
+from agent.agent_loop import AgentLoop
+from agent.llm_client import FakeLLM, make_text_response, make_tool_call_response
+from agent.tools.base import ToolRegistry
+
+# ──────────────────────────────────────────────
+# 测试辅助：假工具 + 装配注册表
+# ──────────────────────────────────────────────
+
+
+class EchoTool:
+    """测试用假工具：把参数原样返回（方便断言）。"""
+
+    def __init__(self, name: str = "echo"):
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self._name,
+                "description": "测试用假工具",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"}
+                    },
+                    "required": ["text"],
+                },
+            },
+        }
+
+    def execute(self, text: str = "") -> str:
+        return f"echo: {text}"
+
+
+class FailingTool:
+    """测试用假工具：永远抛异常（测错误恢复）。"""
+
+    name = "failing_tool"
+
+    @property
+    def schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "failing_tool",
+                "description": "永远失败的测试工具",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        }
+
+    def execute(self) -> str:
+        raise RuntimeError("故意失败")
+
+
+def build_registry(*tools) -> ToolRegistry:
+    """装配一个含指定工具的注册表。"""
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    return registry
+
+
+SYSTEM_PROMPT = "你是面试官"
+
+
+# ──────────────────────────────────────────────
+# 基础循环行为测试
+# ──────────────────────────────────────────────
+
+
+class TestBasicLoop:
+    def test_direct_answer_no_tool(self):
+        """LLM 直接回答：不调工具，循环 1 次结束。"""
+        fake = FakeLLM([make_text_response("你好，我是面试官")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        result = loop.run("你好")
+
+        assert result == "你好，我是面试官"
+        assert fake.call_count == 1  # 只调了 1 次 LLM
+
+    def test_tool_call_then_answer(self):
+        """LLM 调工具后回答：循环 2 次。"""
+        fake = FakeLLM([
+            make_tool_call_response("echo", {"text": "项目信息"}),  # 第 1 轮：调工具
+            make_text_response("我看到你的项目了"),                   # 第 2 轮：回答
+        ])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        result = loop.run("看看我的项目")
+
+        assert result == "我看到你的项目了"
+        assert fake.call_count == 2
+
+    def test_multiple_tool_calls_in_sequence(self):
+        """LLM 连续调多个工具（每轮一个），最后回答。"""
+        fake = FakeLLM([
+            make_tool_call_response("echo", {"text": "第一次"}),
+            make_tool_call_response("echo", {"text": "第二次"}),
+            make_text_response("完成了"),
+        ])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        result = loop.run("开始")
+
+        assert result == "完成了"
+        assert fake.call_count == 3
+
+    def test_multiple_tools_in_one_response(self):
+        """一轮返回多个工具调用（tool_calls 列表有多个）。"""
+        # 构造一个含 2 个工具调用的响应
+        import json
+
+        from agent.llm_client import LLMResponse
+        multi_call = LLMResponse(tool_calls=[
+            {"id": "call_1", "type": "function",
+             "function": {"name": "echo", "arguments": json.dumps({"text": "A"})}},
+            {"id": "call_2", "type": "function",
+             "function": {"name": "echo", "arguments": json.dumps({"text": "B"})}},
+        ])
+        fake = FakeLLM([multi_call, make_text_response("done")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        result = loop.run("test")
+
+        assert result == "done"
+        # 历史里应该有 2 个 tool 结果
+        tool_msgs = [m for m in loop.messages if m.get("role") == "tool"]
+        assert len(tool_msgs) == 2
+
+
+# ──────────────────────────────────────────────
+# 安全阀测试（设计第 2.5 节）
+# ──────────────────────────────────────────────
+
+
+class TestMaxStepsSafety:
+    def test_stops_at_max_steps(self):
+        """达到 MAX_STEPS 必须停，返回兜底文本。"""
+        # 脚本：无限调工具，永远不直接回答
+        infinite_tool_calls = [
+            make_tool_call_response("echo", {"text": str(i)})
+            for i in range(20)
+        ]
+        fake = FakeLLM(infinite_tool_calls)
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+            max_steps=3,  # 设小一点方便测
+        )
+
+        result = loop.run("开始")
+
+        assert "最大推理步数" in result
+        assert fake.call_count == 3  # 恰好调 3 次就停
+
+    def test_max_steps_default_is_8(self):
+        """默认 MAX_STEPS 是 8（设计第 2.5 节）。"""
+        fake = FakeLLM([make_text_response("done")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(),
+            system_prompt=SYSTEM_PROMPT,
+        )
+        assert loop._max_steps == 8
+
+
+# ──────────────────────────────────────────────
+# 错误恢复测试（设计第 3.9 / 6.6 节）
+# ──────────────────────────────────────────────
+
+
+class TestErrorRecovery:
+    def test_tool_failure_recovers(self):
+        """工具失败时，Agent 不崩，错误进历史让 LLM 自我恢复。"""
+        fake = FakeLLM([
+            make_tool_call_response("failing_tool", {}),  # 调会失败的工具
+            make_text_response("看到你出错了，换个方式问"),  # LLM 看到错误后调整
+        ])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(FailingTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        result = loop.run("调用会失败的工具")
+
+        # 没崩，正常返回了 LLM 的第二轮回答
+        assert result == "看到你出错了，换个方式问"
+        assert fake.call_count == 2
+
+        # 错误信息应该进了历史（作为 tool 结果）
+        tool_msgs = [m for m in loop.messages if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert "出错" in tool_msgs[0]["content"] or "失败" in tool_msgs[0]["content"]
+
+    def test_nonexistent_tool_call(self):
+        """LLM 幻觉调用不存在的工具：返回错误文本，不崩。"""
+        fake = FakeLLM([
+            make_tool_call_response("ghost_tool", {}),  # 不存在的工具
+            make_text_response("抱歉，换个问法"),
+        ])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),  # 只有 echo，没有 ghost_tool
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        result = loop.run("test")
+
+        assert result == "抱歉，换个问法"
+        # 错误信息进了历史
+        tool_msgs = [m for m in loop.messages if m.get("role") == "tool"]
+        assert "不存在" in tool_msgs[0]["content"]
+
+
+# ──────────────────────────────────────────────
+# 历史管理测试（验证 Phase 2 被正确调用）
+# ──────────────────────────────────────────────
+
+
+class TestHistoryManagement:
+    def test_system_prompt_always_first(self):
+        """系统提示永远是历史第一条（设计第 6.2.3 节）。"""
+        fake = FakeLLM([make_text_response("hi")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(),
+            system_prompt="重要系统提示",
+        )
+
+        loop.run("用户问题")
+
+        assert loop.messages[0]["role"] == "system"
+        assert loop.messages[0]["content"] == "重要系统提示"
+
+    def test_tool_results_enter_history(self):
+        """工具执行结果正确进入历史（role==tool）。"""
+        fake = FakeLLM([
+            make_tool_call_response("echo", {"text": "数据"}),
+            make_text_response("done"),
+        ])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        loop.run("test")
+
+        tool_msgs = [m for m in loop.messages if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert "数据" in tool_msgs[0]["content"]
+
+    def test_history_persists_across_runs(self):
+        """多次 run 之间历史共享（多轮对话）。"""
+        fake = FakeLLM([
+            make_text_response("第一轮回答"),
+            make_text_response("第二轮回答"),
+        ])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        loop.run("第一轮问题")
+        loop.run("第二轮问题")
+
+        # 历史应该累积：系统 + 用户1 + 助手1 + 用户2 + 助手2
+        assert len(loop.messages) == 5
+        assert loop.messages[0]["role"] == "system"
+        assert loop.messages[1]["content"] == "第一轮问题"
+        assert loop.messages[2]["content"] == "第一轮回答"
+        assert loop.messages[3]["content"] == "第二轮问题"
+        assert loop.messages[4]["content"] == "第二轮回答"
+
+
+# ──────────────────────────────────────────────
+# 回调测试
+# ──────────────────────────────────────────────
+
+
+class TestCallbacks:
+    def test_response_callback_triggered(self):
+        """LLM 直接回答时，on_response 被触发。"""
+        fake = FakeLLM([make_text_response("最终回答")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        captured = []
+        loop.run("test", on_response=captured.append)
+
+        assert captured == ["最终回答"]
+
+    def test_tool_call_callback_triggered(self):
+        """调工具时，on_tool_call 被触发（start 和 end 两次）。"""
+        fake = FakeLLM([
+            make_tool_call_response("echo", {"text": "hi"}),
+            make_text_response("done"),
+        ])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        events = []
+
+        def on_tool_call(name, args, phase, result):
+            events.append((name, phase, result))
+
+        loop.run("test", on_tool_call=on_tool_call)
+
+        # 应该有 start 和 end 两个事件
+        assert len(events) == 2
+        assert events[0][0] == "echo"       # 工具名
+        assert events[0][1] == "start"      # 开始
+        assert events[1][1] == "end"        # 结束
+        assert "hi" in events[1][2]         # 结果含 echo 内容
+
+    def test_callbacks_not_required(self):
+        """不传回调也能正常运行（回调是可选的）。"""
+        fake = FakeLLM([make_text_response("done")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        # 不传任何回调，应该不报错
+        result = loop.run("test")
+        assert result == "done"
