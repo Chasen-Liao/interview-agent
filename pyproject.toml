@@ -5,9 +5,9 @@ description = "会调工具的 Agent —— 项目面试预演"
 requires-python = ">=3.12"
 
 # 运行依赖：项目跑起来必须装的库
-# 现在先留空，Phase 3/4 再按需加（openai 等）
-# 这样 MVP 早期不会被一堆依赖拖慢
-dependencies = []
+dependencies = [
+    "openai>=2.0",      # OpenAI 兼容 API 客户端（Phase 3）
+]
 
 # 开发依赖：只有开发/测试时才需要的工具
 # 装法：pip install -e ".[dev]"（-e 是 editable，改代码不用重装）
