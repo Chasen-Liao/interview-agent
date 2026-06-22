@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 虚拟环境（如果你用 venv/uv）
+.venv/
+venv/
+env/
+
+# Agent 运行时数据（第 6 节：会话历史落盘）
+# .sessions/ 里存的是对话历史，包含代码内容，不能进版本库
+.sessions/
+
+# 密钥与敏感信息（第 1.8.4 节：API key 只在内存，不落盘）
+.env
+.env.*
+*.key
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+
+# OS 杂物
+.DS_Store
+Thumbs.db
+
+# Node.js（VS Code 插件部分，Phase 6）
+node_modules/
+*.vsix
+
+# 构建产物 / 日志
+dist/
+build/
+*.log
+
+# 设计文档（私密内容，不进版本库）
+docs/

@@ -1,0 +1,44 @@
+[project]
+name = "interview-agent"
+version = "0.1.0"
+description = "会调工具的 Agent —— 项目面试预演"
+requires-python = ">=3.12"
+
+# 运行依赖：项目跑起来必须装的库
+# 现在先留空，Phase 3/4 再按需加（openai 等）
+# 这样 MVP 早期不会被一堆依赖拖慢
+dependencies = []
+
+# 开发依赖：只有开发/测试时才需要的工具
+# 装法：pip install -e ".[dev]"（-e 是 editable，改代码不用重装）
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",      # 测试框架（第 7 节）
+    "ruff>=0.4",        # 代码检查 + 格式化（极快，替代 flake8/black）
+]
+
+# ──────────────────────────────────────────────
+# pytest 配置
+# 第 7 节讲过：测试文件放 agent/tests/，命名 test_*.py
+# ──────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["agent/tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+# 执行 pytest 时自动加这两个环境变量，方便测试代码导入
+pythonpath = ["."]
+
+# ──────────────────────────────────────────────
+# ruff 配置（代码检查 + 格式化）
+# ruff 一个工具替代 black + isort + flake8 + ...
+# ──────────────────────────────────────────────
+[tool.ruff]
+line-length = 100          # 一行最多 100 字符（PEP8 默认 79 太短）
+target-version = "py312"   # 针对 Python 3.12 检查
+
+[tool.ruff.lint]
+# 启用的规则集合：
+# E  = pycodestyle 错误（PEP8）
+# F  = pyflakes（逻辑错误，如未使用变量）
+# I  = isort（import 排序）
+select = ["E", "F", "I"]
