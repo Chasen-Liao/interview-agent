@@ -42,3 +42,8 @@ target-version = "py312"   # 针对 Python 3.12 检查
 # F  = pyflakes（逻辑错误，如未使用变量）
 # I  = isort（import 排序）
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# prompt_builder.py 整体是系统提示文本（给 LLM 读的中文字符串），
+# 行长度限制不适用——强行换行会破坏提示语义。E501 单独豁免。
+"agent/prompt_builder.py" = ["E501"]
