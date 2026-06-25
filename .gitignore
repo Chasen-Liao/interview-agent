@@ -37,5 +37,13 @@ dist/
 build/
 *.log
 
+# 数据库文件（运行时数据，不进版本库）
+*.sqlite
+*.sqlite3
+*.db
+
+# Windows 上误执行 > nul 重定向产生的伪文件
+nul
+
 # 设计文档（私密内容，不进版本库）
 docs/
