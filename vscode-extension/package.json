@@ -1,0 +1,82 @@
+{
+  "name": "interview-agent",
+  "displayName": "Interview Agent",
+  "description": "会调工具的 AI 面试官——Agent 主动调用工具核对代码、给出基于真实代码的追问",
+  "version": "0.1.0",
+  "publisher": "daisy-hhy",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other", "Machine Learning"],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "interview.start",
+        "title": "Interview Agent: 开始面试"
+      },
+      {
+        "command": "interview.askAboutSelection",
+        "title": "Interview Agent: 针对选中代码提问",
+        "enablement": "editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "Interview Agent",
+      "properties": {
+        "interview.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI 兼容服务的 API Key（必填，否则无法发起面试）。"
+        },
+        "interview.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "使用的模型名（OpenAI 兼容）。"
+        },
+        "interview.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI 兼容服务的 base URL。留空使用官方 OpenAI；填国内中转或兼容端点可接入 DeepSeek / 智谱 / 通义等。"
+        },
+        "interview.resume": {
+          "type": "string",
+          "default": "",
+          "description": "简历摘要（可选）。注入系统提示，帮面试官了解你的背景。"
+        },
+        "interview.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python 解释器路径（用于启动 Agent 内核）。默认用系统 PATH 里的 python。"
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "interview.start"
+        },
+        {
+          "command": "interview.askAboutSelection",
+          "when": "editorHasSelection"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./ && npm run copy-media",
+    "copy-media": "node -e \"require('fs').cpSync('src/webview/styles.css','media/styles.css');require('fs').cpSync('src/webview/main.js','media/main.js')\"",
+    "watch": "tsc -watch -p ./",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

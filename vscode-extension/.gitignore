@@ -1,0 +1,9 @@
+# 依赖
+node_modules/
+
+# TS 编译产物（需要 npm run compile 重新生成）
+out/
+
+# 注意：media/ 下的 styles.css、main.js 是运行时必需的静态资源，
+# 虽然可由 copy-media 从 src/webview 复制生成，但为让 clone 后能直接 F5，
+# 它们被提交进仓库（与 src/webview 内容保持一致，编译时会自动同步）。

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- CSP 由 Extension Host 注入：禁止内联脚本、只允许 nonce 脚本、限制资源来源 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interview Agent</title>
+  <link rel="stylesheet" href="${stylesUri}" />
+</head>
+<body>
+  <div id="app">
+    <!-- 消息流：所有气泡追加到这里 -->
+    <div id="messages" class="messages"></div>
+
+    <!-- 输入区 -->
+    <div class="composer">
+      <textarea
+        id="input"
+        class="composer__input"
+        placeholder="和面试官聊聊你的项目…（Enter 发送，Shift+Enter 换行）"
+        rows="2"
+      ></textarea>
+      <button id="send" class="composer__send" title="发送">发送</button>
+      <button id="stop" class="composer__stop" title="中断" disabled>停止</button>
+    </div>
+  </div>
+
+  <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+</html>

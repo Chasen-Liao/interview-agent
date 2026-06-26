@@ -39,8 +39,8 @@
 | 2 | 历史管理（压缩 + token 限流） | ✅ 完成 |
 | 3 | LLM 客户端（`OpenAIClient` + `FakeLLM`） | ✅ 完成 |
 | 4 | Agent 循环（ReAct while 循环 + 工具调度 + 安全阀 + 错误恢复） | ✅ 完成 |
-| 5 | 协议层 + 系统提示 + 会话管理 + 入口 | 🚧 开发中 |
-| 6 | VS Code 插件外壳（TS） | ⏳ 待开发 |
+| 5 | 协议层 + 系统提示 + 会话管理 + 入口 | ✅ 完成 |
+| 6 | VS Code 插件外壳（TS）—— webview + 子进程 + 协议转发 | ✅ 完成 |
 | 7 | 联调与调优 | ⏳ 待开发 |
 
 ---
@@ -54,15 +54,25 @@ interview-agent/
 │   ├── agent_loop.py              # Agent 循环（ReAct）
 │   ├── llm_client.py              # OpenAI 兼容客户端 + FakeLLM
 │   ├── history.py                 # 历史摘要/裁剪
+│   ├── protocol.py                # JSON-RPC 收发 + 7 种消息类型
+│   ├── prompt_builder.py          # 面试官系统提示组装
+│   ├── session.py                 # 会话管理 + 历史落盘
+│   ├── main.py                    # stdio 入口（VS Code spawn 它）
+│   ├── smoke.py                   # 进程级冒烟脚本（FakeLLM，零费用）
 │   ├── tools/                     # 工具（可插拔）
 │   │   ├── base.py                # Tool 接口 + ToolRegistry
 │   │   ├── builtin.py             # list_directory / search_code / read_file
 │   │   └── __main__.py            # 工具装配验证脚本
-│   └── tests/                     # 测试（第 1-3 层，用 FakeLLM）
-│       ├── test_tools.py
-│       ├── test_history.py
-│       ├── test_llm_client.py
-│       └── test_agent_loop.py
+│   └── tests/                     # 测试（用 FakeLLM，零 API 费用）
+├── vscode-extension/              # VS Code 插件外壳（TS）
+│   ├── src/
+│   │   ├── extension.ts           # 激活入口 + 命令注册
+│   │   ├── protocol.ts            # TS 侧协议类型（对齐 Python）
+│   │   ├── agentClient.ts         # Python 子进程管理（spawn + stdio）
+│   │   ├── webviewPanel.ts        # Webview + postMessage 路由 + CSP
+│   │   └── webview/               # 前端（HTML/CSS/JS，纯原生）
+│   ├── test/                      # vitest 单测 + 跨语言集成测试
+│   └── package.json               # 插件清单（命令/配置）
 ├── pyproject.toml                 # Python 项目配置（依赖、pytest、ruff）
 ├── .gitignore
 └── README.md
@@ -72,7 +82,8 @@ interview-agent/
 
 ## 环境要求
 
-- **Python ≥ 3.12**
+- **Python ≥ 3.12**（Agent 内核）
+- **Node.js ≥ 18**（VS Code 插件，开发用）
 - 操作系统：Windows / macOS / Linux
 
 ## 安装
@@ -80,22 +91,58 @@ interview-agent/
 ```bash
 git clone https://github.com/Daisy-HHY/interview-agent.git
 cd interview-agent
+
+# Python 内核
 pip install -e ".[dev]"
+
+# VS Code 插件（开发依赖）
+cd vscode-extension
+npm install
+cd ..
 ```
 
 ## 运行测试
 
-Agent 内核的全部逻辑都通过 `FakeLLM`（零费用、完全确定）测试，无需真实 API key：
+### Python 内核
+
+全部逻辑通过 `FakeLLM`（零费用、完全确定）测试，无需真实 API key：
 
 ```bash
 pytest
 ```
 
+### VS Code 插件（TS）
+
+```bash
+cd vscode-extension
+npm test
+```
+
+含一个**跨语言端到端测试**：TS 的 AgentClient spawn 真实 Python 内核（注入 FakeLLM），验证 `init/chat` 消息和 `tool_call/stream/done` 通知在 TS↔Python 之间完整闭环。
+
 ## 代码检查
 
 ```bash
+# Python
 ruff check agent/
+
+# TypeScript（在 vscode-extension 目录）
+npx tsc -p ./ --noEmit
 ```
+
+---
+
+## 作为 VS Code 插件运行（开发调试）
+
+```bash
+cd vscode-extension
+npm run compile          # 编译 TS + 复制 webview 资源
+```
+
+然后在 VS Code 里按 `F5` 启动 Extension Development Host：
+1. 打开一个项目（作为"被面试"的代码）
+2. 命令面板执行 `Interview Agent: 开始面试`
+3. 在设置里填 `interview.apiKey`（OpenAI 兼容），可选填 `interview.baseUrl` 接入 DeepSeek/智谱等
 
 ---
 
