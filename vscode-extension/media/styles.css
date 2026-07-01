@@ -7,6 +7,10 @@
   box-sizing: border-box;
 }
 
+:root {
+  --composer-height: 140px;
+}
+
 html,
 body {
   margin: 0;
@@ -44,6 +48,9 @@ body {
   line-height: 1.5;
   word-wrap: break-word;
   white-space: pre-wrap;
+  /* 自适应：透明背景 + 主题前景色（深色主题=浅字，浅色主题=深字） */
+  background: transparent;
+  color: var(--vscode-foreground, currentColor);
   animation: fadeIn 0.15s ease-out;
 }
 
@@ -58,24 +65,22 @@ body {
   }
 }
 
-/* 用户气泡：靠右，强调色 */
+/* 用户气泡：靠右，用边框区分（背景透明，字体白） */
 .bubble--user {
   align-self: flex-end;
-  background: var(--vscode-button-background, #007acc);
-  color: var(--vscode-button-foreground, #fff);
+  border: 1px solid var(--vscode-button-background, #007acc);
 }
 
-/* 面试官气泡：靠左，次级背景 */
+/* 面试官气泡：靠左，细边框区分（边框色随主题，自适应深浅） */
 .bubble--interviewer {
   align-self: flex-start;
-  background: var(--vscode-editor-inactive-selection-background, #e8e8e8);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
 }
 
-/* 工具气泡：中性灰，等宽字体显示参数/结果 */
+/* 工具气泡：用左边框强调色区分，等宽字体 */
 .bubble--tool {
   align-self: flex-start;
   max-width: 90%;
-  background: var(--vscode-textBlockQuote-background, #f5f5f5);
   border-left: 3px solid var(--vscode-textLink-foreground, #007acc);
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.9em;
@@ -92,10 +97,9 @@ body {
   50% { opacity: 1; }
 }
 
-/* 错误气泡：红色边框，带重试 */
+/* 错误气泡：透明背景 + 红色（用主题 errorForeground，自适应深浅主题） */
 .bubble--error {
   align-self: flex-start;
-  background: var(--vscode-inputValidation-errorBackground, #ffd9d9);
   border-left: 3px solid var(--vscode-errorForeground, #d32f2f);
   color: var(--vscode-errorForeground, #d32f2f);
 }
@@ -107,31 +111,40 @@ body {
   margin-bottom: 3px;
 }
 
-/* 工具结果可折叠（设计第 5.4.2 节） */
+/* 工具结果区：用主题代码块背景，文字继承气泡前景色（自适应） */
 .bubble__result {
   margin-top: 6px;
   padding: 6px;
-  background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.04));
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
   border-radius: 4px;
   font-size: 0.85em;
   max-height: 200px;
   overflow-y: auto;
   white-space: pre-wrap;
+  color: inherit;
+}
 }
 
 /* ───────── 输入区 ───────── */
 .composer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px 36px;
+  align-items: end;
   gap: 6px;
   padding: 10px;
+  width: 100%;
+  height: var(--composer-height);
+  min-height: var(--composer-height);
+  flex: 0 0 var(--composer-height);
   border-top: 1px solid var(--vscode-panel-border, #ddd);
   background: var(--vscode-editor-background, #fff);
 }
 
 .composer__input {
-  flex: 1;
+  width: 100%;
+  min-width: 0;
   resize: none;
-  padding: 8px 10px;
+  padding: 10px 12px;
   font-family: inherit;
   font-size: inherit;
   color: var(--vscode-input-foreground, inherit);
@@ -139,6 +152,9 @@ body {
   border: 1px solid var(--vscode-input-border, #ccc);
   border-radius: 6px;
   outline: none;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .composer__input:focus {
@@ -147,11 +163,17 @@ body {
 
 .composer__send,
 .composer__stop {
-  padding: 0 16px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  font-size: inherit;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .composer__send {

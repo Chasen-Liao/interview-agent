@@ -8,6 +8,37 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 
+def _strip_surrogates(text: str) -> str:
+    """清除字符串里的孤立代理项。
+
+    Windows 文件名/文件内容可能含 \\udcaa 等代理项字符，UTF-8 编不出，
+    openai 库序列化请求时会抛 UnicodeEncodeError。
+    用 surrogatepass 编成原始字节，再 ignore 解码丢弃。
+    """
+    try:
+        return text.encode("utf-8", "surrogatepass").decode("utf-8", "ignore")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return text
+
+
+def _clean_surrogates(obj: Any) -> Any:
+    """递归清理数据结构里所有字符串的孤立代理项。
+
+    对 dict / list / tuple 递归深入，对 str 清理，其他类型原样返回。
+    这样 messages + tools 里无论坏字符藏多深（嵌套的 function.arguments 字符串等）
+    都能在发给 openai 前清干净。
+    """
+    if isinstance(obj, str):
+        return _strip_surrogates(obj)
+    if isinstance(obj, dict):
+        return {k: _clean_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_surrogates(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_clean_surrogates(item) for item in obj)
+    return obj
+
+
 @dataclass
 class LLMResponse:
     """LLM 一次调用的结构化响应。
@@ -112,6 +143,12 @@ class OpenAIClient:
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
     def chat(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
+        # 终极防御：清掉所有数据里的孤立代理项。
+        # Windows 文件名/文件内容可能含 \udcaa 等代理项，openai 序列化请求
+        # body 时会抛 UnicodeEncodeError。在调用前递归清理整个数据结构。
+        messages = _clean_surrogates(messages)
+        tools = _clean_surrogates(tools)
+
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": messages,

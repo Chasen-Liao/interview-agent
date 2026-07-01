@@ -49,6 +49,16 @@ def parse_message(line: str) -> dict | None:
 # ──────────────────────────────────────────────
 
 
+def _sanitize(text: str) -> str:
+    """清除字符串里的孤立代理项（surrogate）。
+
+    实现复用 agent_loop._sanitize_surrogates（同一套清理逻辑，避免重复）。
+    """
+    from agent.agent_loop import _sanitize_surrogates
+
+    return _sanitize_surrogates(text)
+
+
 def notify(method: str, params: dict) -> None:
     """往 stdout 写一行 JSON 通知（设计第 1.5.2 节）。
 
@@ -60,7 +70,9 @@ def notify(method: str, params: dict) -> None:
         params: 通知参数
     """
     msg = {"jsonrpc": "2.0", "method": method, "params": params}
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
+    # 序列化后清掉孤立代理项，防止 Windows 文件名含坏字符导致编码崩溃
+    line = _sanitize(json.dumps(msg, ensure_ascii=False)) + "\n"
+    sys.stdout.write(line)
     sys.stdout.flush()
 
 

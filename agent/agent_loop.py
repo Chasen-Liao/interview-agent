@@ -10,6 +10,21 @@ from agent.history import compress_history, enforce_token_limit
 from agent.llm_client import LLMClient, LLMResponse
 from agent.tools.base import ToolRegistry
 
+
+def _sanitize_surrogates(text: str) -> str:
+    """清除字符串里的孤立代理项（surrogate）。
+
+    Windows 上 os.listdir / 文件名 / 文件内容可能返回含孤立代理项的字符串，
+    这些字符 UTF-8 无法编码，会导致 OpenAI 序列化请求、notify 输出时抛
+    UnicodeEncodeError。
+
+    先用 surrogatepass 把代理项编成原始字节，再用 ignore 解码丢弃坏字节。
+    """
+    try:
+        return text.encode("utf-8", "surrogatepass").decode("utf-8", "ignore")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return text
+
 # 回调类型：让外部（Phase 5 的协议层）能知道"循环在干什么"
 # on_tool_call: 工具被调用时通知（UI 显示"正在搜代码"气泡）
 # on_response: LLM 给出最终文本回答时通知（UI 流式输出）
@@ -160,9 +175,15 @@ class AgentLoop:
             return f"错误：不存在名为 '{name}' 的工具。可用工具：{[t for t in self._tools._tools]}"
 
         try:
-            return tool.execute(**args)
+            result = tool.execute(**args)
         except Exception as e:
             # 错误当 Observation 喂回去，LLM 会自己调整策略
-            return f"工具执行出错: {type(e).__name__}: {e}"
+            result = f"工具执行出错: {type(e).__name__}: {e}"
+
+        # 清理工具结果里的孤立代理项（surrogate）。
+        # Windows 文件名可能含坏字符（如 .venv 残留），这些字符 UTF-8 编不出，
+        # 会导致后续 OpenAI 序列化请求 / notify 输出时抛 UnicodeEncodeError。
+        # 在结果进入历史前清掉，根治所有下游崩溃。
+        return _sanitize_surrogates(result)
         
     

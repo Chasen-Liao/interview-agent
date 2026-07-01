@@ -10,6 +10,7 @@
  * - 生命周期：进程退出/出错时通知上层，不崩 Extension Host
  */
 
+import { delimiter as PATH_DELIMITER } from "path";
 import { ChildProcessWithoutNullStreams, spawn } from "child_process";
 import { buildInit, parse, ParsedNotification, Request } from "./protocol";
 
@@ -19,8 +20,16 @@ export interface AgentClientOptions {
   pythonPath: string;
   /** agent/main.py 的绝对路径。 */
   scriptPath: string;
-  /** 学生项目根目录（作为 workspace 传给 Python）。 */
+  /**
+   * 学生项目根目录（作为 workspace 传给 Python，工具翻代码的根）。
+   * 和 pythonPathRoot 不同：这个是被面试的项目，可能是任意文件夹。
+   */
   workspace: string;
+  /**
+   * agent 包所在的根目录（用于 PYTHONPATH，让 Python 能 import agent.xxx）。
+   * 通常 = 仓库根（含 agent/ 目录）。和 workspace 解耦。
+   */
+  pythonPathRoot: string;
   /** OpenAI 兼容 API Key。 */
   apiKey: string;
   /** 模型名。 */
@@ -31,14 +40,23 @@ export interface AgentClientOptions {
   resume?: string;
   /** 会话 id（init 时带上，便于 Python 落盘隔离）。 */
   session?: string;
+  /**
+   * 演示模式（设计第 5E 节冒烟）：true 时用 FakeLLM 代替真实 API，
+   * 零费用跑完整闭环，展示面试官对话/工具气泡/流式效果。
+   */
+  demoMode?: boolean;
 }
 
 /** 进程级错误的回调签名。 */
 export type ErrorCallback = (message: string) => void;
 
+/** 诊断日志回调（Python stderr、生命周期事件等，用于排查"没反应"问题）。 */
+export type LogCallback = (message: string) => void;
+
 export class AgentClient {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private notificationCallbacks: Array<(n: ParsedNotification) => void> = [];
+  private logCallbacks: Array<LogCallback> = [];
   private errorCallbacks: Array<ErrorCallback> = [];
   // stdout 可能把一条消息分多次 data 事件投递，需按换行符分帧缓冲
   private stdoutBuffer = "";
@@ -56,12 +74,33 @@ export class AgentClient {
     }
     this.started = true;
 
+    // 诊断：记录实际用的启动命令，方便排查 python 找不到 / 用错 venv
+    const cmd = `${this.options.pythonPath} -u ${this.options.scriptPath}`;
+    this.log(`[spawn] 启动 Python 内核: ${cmd}`);
+
+    // 关键：必须把 pythonPathRoot（agent 包所在根）加入 PYTHONPATH，
+    // 否则 Python 找不到 agent 包（main.py 里 `import agent.protocol` 依赖它）。
+    // 注意：用的是 pythonPathRoot（仓库根）而非 workspace（被面试项目），
+    // 因为被面试的项目里没有 agent 包。
+    const env = { ...process.env };
+    const existing = env.PYTHONPATH ?? "";
+    env.PYTHONPATH = existing
+      ? `${this.options.pythonPathRoot}${PATH_DELIMITER}${existing}`
+      : this.options.pythonPathRoot;
+
+    // 演示模式：让 Python 内核用 FakeLLM（零费用，不调真实 API）
+    if (this.options.demoMode) {
+      env.INTERVIEW_FAKE_LLM = "1";
+      this.log("[demo] 演示模式：使用 FakeLLM，不调用真实 API");
+    }
+
     // -u：无缓冲，确保流式通知实时推出（设计第 1.6 节缓冲区陷阱）
     this.proc = spawn(
       this.options.pythonPath,
       ["-u", this.options.scriptPath],
       {
         stdio: ["pipe", "pipe", "pipe"],
+        env,
       },
     );
 
@@ -98,6 +137,17 @@ export class AgentClient {
   /** 注册错误回调（进程崩溃、stderr 等）。 */
   onError(cb: ErrorCallback): void {
     this.errorCallbacks.push(cb);
+  }
+
+  /** 注册诊断日志回调（stderr、生命周期事件，用于排查"没反应"）。 */
+  onLog(cb: LogCallback): void {
+    this.logCallbacks.push(cb);
+  }
+
+  private log(message: string): void {
+    for (const cb of this.logCallbacks) {
+      cb(message);
+    }
   }
 
   /** 终止 Python 子进程。 */
@@ -153,9 +203,11 @@ export class AgentClient {
     }
     this.proc.stderr.setEncoding("utf-8");
     this.proc.stderr.on("data", (chunk: string) => {
-      // Python 的 traceback 走 stderr，转成错误回调（设计第 6.4.1 节）
-      // 但不崩，只是上报
-      this.emitError(`Python stderr: ${chunk.trim()}`);
+      const text = chunk.trim();
+      // stderr 同时走诊断日志（永远可见）和错误回调（前端红色气泡）
+      // 设计第 6.4.1 节：Python 的 traceback 走 stderr
+      this.log(`[stderr] ${text}`);
+      this.emitError(`Python stderr: ${text}`);
     });
   }
 
@@ -164,6 +216,7 @@ export class AgentClient {
       return;
     }
     this.proc.on("exit", (code, signal) => {
+      this.log(`[exit] Python 子进程退出，code=${code} signal=${signal ?? "无"}`);
       if (code !== 0 && code !== null) {
         this.emitError(
           `Python 子进程退出，退出码 ${code}（信号 ${signal ?? "无"}）`,
@@ -173,6 +226,7 @@ export class AgentClient {
     });
     this.proc.on("error", (err) => {
       // spawn 失败（如 python 不在 PATH）走这里
+      this.log(`[error] 无法启动: ${err.message}`);
       this.emitError(`无法启动 Python 子进程：${err.message}`);
     });
   }

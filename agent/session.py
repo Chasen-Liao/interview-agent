@@ -11,12 +11,33 @@
 
 import json
 import os
-from typing import Callable
+from typing import Any, Callable
 
 from agent.agent_loop import AgentLoop
 from agent.llm_client import LLMClient
 from agent.prompt_builder import build_system_message
 from agent.tools.base import ToolRegistry
+
+
+def _strip_surrogates(text: str) -> str:
+    """清除 UTF-8 无法编码的孤立代理项字符。"""
+    try:
+        return text.encode("utf-8", "surrogatepass").decode("utf-8", "ignore")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return text
+
+
+def _clean_for_json(obj: Any) -> Any:
+    """递归清理要写入 JSON 的数据，避免落盘时编码失败。"""
+    if isinstance(obj, str):
+        return _strip_surrogates(obj)
+    if isinstance(obj, dict):
+        return {_clean_for_json(k): _clean_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_for_json(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_clean_for_json(item) for item in obj)
+    return obj
 
 
 class SessionStore:
@@ -129,12 +150,60 @@ class SessionStore:
         """
         if self._llm_factory is not None:
             return self._llm_factory()
+
+        # 演示模式（设计第 5E 节冒烟用）：环境变量 INTERVIEW_FAKE_LLM=1 时
+        # 用 FakeLLM 代替真实 API，零费用跑完整闭环，展示面试官对话效果。
+        # 不用真 key、不花钱，用于本地演示和验证 UI。
+        import os
+        if os.environ.get("INTERVIEW_FAKE_LLM") == "1":
+            return self._build_demo_llm()
+
         from agent.llm_client import OpenAIClient
         return OpenAIClient(
             api_key=self._api_key,  # type: ignore[arg-type]
             model=self._model,
             base_url=self._base_url,
         )
+
+    def _build_demo_llm(self) -> LLMClient:
+        """构造演示用的 LLM（零费用，模拟真实面试官多轮对话）。
+
+        FakeLLM 脚本是线性消耗、耗尽即报错的，不适合多轮对话场景
+        （用户可能连续发多条消息）。这里用一个专用的 DemoLLM：
+        第一轮完整演示"调工具→追问"的链路，之后每轮直接追问，
+        永不耗尽，让用户能持续体验面试官对话效果。
+        """
+        from agent.llm_client import (
+            LLMResponse,
+            make_text_response,
+            make_tool_call_response,
+        )
+
+        return _DemoLLM([
+            # 第 1 轮的完整链路：摸结构 → 读文件 → 追问
+            make_tool_call_response("list_directory", {"path": "."}),
+            make_tool_call_response("read_file", {"path": "README.md"}),
+            make_text_response(
+                "我看了一下你的项目结构和 README。这是一个会调工具的 AI 面试官项目，"
+                "架构上 VS Code 插件 spawn Python 子进程通过 stdio 通信。\n\n"
+                "我有几个追问：\n"
+                "1. 你这个 Agent 循环最多跑多少步？如果 LLM 一直调工具不收敛，怎么兜底？\n"
+                "2. 工具执行失败时，你是直接报错，还是把错误喂回给 LLM 让它自己恢复？\n"
+                "3. 你怎么测试这个 Agent 的行为？用的真实 API 还是 mock？"
+            ),
+        ], fallback=[
+            # 后续每轮：直接给不同的追问（循环复用，永不耗尽）
+            make_text_response(
+                "（演示模式：以下是预设的追问）\n\n"
+                "你刚才提到的这部分，能展开讲讲具体实现吗？"
+                "比如核心的数据结构或流程是怎么设计的？"
+            ),
+            make_text_response(
+                "（演示模式）\n\n"
+                "听起来不错。如果让你现在重新做，有哪些地方你会改进？\n"
+                "当时踩过什么坑？"
+            ),
+        ])
 
     # ──────────────────────────────────────────────
     # 历史落盘 / 恢复（设计第 6.4.3 节）
@@ -151,8 +220,9 @@ class SessionStore:
 
         os.makedirs(self._sessions_dir, exist_ok=True)
         path = self._session_path(session_id)
+        messages = _clean_for_json(loop.messages)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(loop.messages, f, ensure_ascii=False, indent=2)
+            json.dump(messages, f, ensure_ascii=False, indent=2)
 
     def _restore(self, loop: AgentLoop, session_id: str) -> None:
         """从盘恢复历史到 loop（文件不存在则跳过）。"""
@@ -204,3 +274,39 @@ def build_default_registry(workspace: str) -> ToolRegistry:
     registry.register(SearchCodeTool(workspace))
     registry.register(ReadFileTool(workspace))
     return registry
+
+
+# ──────────────────────────────────────────────
+# 演示模式专用 LLM（设计第 5E 节冒烟）
+# ──────────────────────────────────────────────
+
+
+class _DemoLLM:
+    """演示模式 LLM：首轮按脚本，之后循环复用 fallback，永不耗尽。
+
+    FakeLLM 脚本线性消耗、耗尽报错，适合单测但不适合多轮 UI 演示。
+    本类专为 demoMode 设计：
+    - initial 脚本：第一轮对话按顺序消耗（演示完整的"调工具→追问"链路）
+    - initial 耗尽后，用 fallback 循环复用（让用户能持续发消息）
+    """
+
+    def __init__(
+        self,
+        initial: list,
+        fallback: list,
+    ) -> None:
+        from agent.llm_client import LLMResponse  # noqa: F401 — 类型提示用
+        self._initial = initial
+        self._fallback = fallback
+        self._call_count = 0
+
+    def chat(self, messages, tools):
+        # 脚本未耗尽：按顺序返回
+        if self._call_count < len(self._initial):
+            resp = self._initial[self._call_count]
+            self._call_count += 1
+            return resp
+        # 脚本耗尽：循环复用 fallback（永不报错）
+        idx = (self._call_count - len(self._initial)) % len(self._fallback)
+        self._call_count += 1
+        return self._fallback[idx]

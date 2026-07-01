@@ -149,6 +149,19 @@ class TestPersistence:
         assert "user" in roles
         assert "assistant" in roles
 
+    def test_save_strips_surrogates_before_writing_json(self, tmp_path):
+        """历史里混入孤立代理项时，save 仍能写出合法 UTF-8 JSON。"""
+        store, _ = make_store(tmp_path)
+        loop = store.get_or_create("s1")
+        loop.messages.append({"role": "assistant", "content": "坏\udc81字符"})
+
+        store.save("s1")
+
+        with open(tmp_path / ".sessions" / "s1.json", encoding="utf-8") as f:
+            messages = json.load(f)
+
+        assert messages[-1]["content"] == "坏字符"
+
     def test_restore_after_save(self, tmp_path):
         """落盘后新建 store 能恢复历史（模拟子进程重启续接）。"""
         # 第一个 store：跑一轮对话并落盘

@@ -9,19 +9,40 @@
  */
 
 import { randomBytes } from "crypto";
-import { Uri, ViewColumn, Webview, WebviewView, window } from "vscode";
+import {
+  OutputChannel,
+  Uri,
+  ViewColumn,
+  Webview,
+  WebviewView,
+  window,
+} from "vscode";
 import { AgentClient } from "./agentClient";
 import { buildChat, buildStop } from "./protocol";
+
+/** 共享的调试输出通道（整个插件一个，所有面板的 Python 日志都写这里）。 */
+let debugChannel: OutputChannel | null = null;
+function getDebugChannel(): OutputChannel {
+  if (!debugChannel) {
+    debugChannel = window.createOutputChannel("Interview Agent", { log: true });
+  }
+  return debugChannel;
+}
 
 /** 从配置构造 AgentClient 需要的参数。 */
 export interface PanelOptions {
   pythonPath: string;
   scriptPath: string;
+  /** 被面试的项目根（工具翻代码的根）。 */
   workspace: string;
+  /** agent 包所在根（PYTHONPATH 用），通常 = 仓库根。 */
+  pythonPathRoot: string;
   apiKey: string;
   model: string;
   baseUrl?: string;
   resume?: string;
+  /** 演示模式：用 FakeLLM，零费用（设计第 5E 节冒烟）。 */
+  demoMode?: boolean;
 }
 
 export class InterviewPanel {
@@ -39,11 +60,13 @@ export class InterviewPanel {
       pythonPath: options.pythonPath,
       scriptPath: options.scriptPath,
       workspace: options.workspace,
+      pythonPathRoot: options.pythonPathRoot,
       apiKey: options.apiKey,
       model: options.model,
       baseUrl: options.baseUrl,
       resume: options.resume,
       session: this.sessionId,
+      demoMode: options.demoMode,
     });
   }
 
@@ -120,13 +143,22 @@ export class InterviewPanel {
   // ──────────────────────────────────────────────
 
   private wireAgent(webview: Webview): void {
+    const logger = getDebugChannel();
+
+    // 诊断日志：Python 的 stderr、spawn/exit 事件都写进 OutputChannel
+    // 这是排查"发消息没反应"的关键——能看到 Python 到底起没起来、报什么错
+    this.agent.onLog((message) => {
+      logger.appendLine(message);
+    });
+
     this.agent.onNotification((n) => {
       // 透传给前端：通知原样 postMessage（method + params 结构不变）
       void webview.postMessage({ method: n.method, params: n.params });
     });
 
     this.agent.onError((message) => {
-      // 进程级错误也走 error 通知通道，前端红色气泡展示
+      // 错误同时记日志（诊断）和推给前端（红色气泡）
+      logger.appendLine(`[error] ${message}`);
       void webview.postMessage({
         method: "error",
         params: { session: this.sessionId, message },
@@ -163,9 +195,9 @@ export class InterviewPanel {
   <div id="app">
     <div id="messages" class="messages"></div>
     <div class="composer">
-      <textarea id="input" class="composer__input" placeholder="和面试官聊聊你的项目…（Enter 发送，Shift+Enter 换行）" rows="2"></textarea>
-      <button id="send" class="composer__send" title="发送">发送</button>
-      <button id="stop" class="composer__stop" title="中断" disabled>停止</button>
+      <textarea id="input" class="composer__input" placeholder="和面试官聊聊你的项目…（Enter 发送，Shift+Enter 换行）" rows="4"></textarea>
+      <button id="send" class="composer__send" title="发送" aria-label="发送">↑</button>
+      <button id="stop" class="composer__stop" title="停止" aria-label="停止" disabled>■</button>
     </div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

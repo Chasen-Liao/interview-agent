@@ -26,6 +26,7 @@ interface InterviewConfig {
   baseUrl: string;
   resume: string;
   pythonPath: string;
+  demoMode: boolean;
 }
 
 function readConfig(): InterviewConfig {
@@ -36,42 +37,50 @@ function readConfig(): InterviewConfig {
     baseUrl: cfg.get<string>("baseUrl", ""),
     resume: cfg.get<string>("resume", ""),
     pythonPath: cfg.get<string>("pythonPath", "python"),
+    demoMode: cfg.get<boolean>("demoMode", false),
   };
 }
 
 export function activate(context: ExtensionContext): void {
   const htmlBasePath = Uri.joinPath(context.extensionUri, "media");
 
+  // 关键：agent/main.py 的位置基于插件自身路径推算，不依赖用户打开了哪个工作区。
+  // 插件在 <repo>/vscode-extension/，往上两级是仓库根（含 agent/）。
+  // 这样即使用户在 Extension Host 窗口切到别的项目，也能找到正确的内核脚本。
+  // 作为"被面试"的项目代码（workspace）则用用户当前打开的文件夹。
+  const repoRoot = Uri.joinPath(context.extensionUri, "..").fsPath;
+  const agentScriptPath = path.join(repoRoot, "agent", "main.py");
+
   // ───────── interview.start ─────────
   const startCmd = commands.registerCommand("interview.start", async () => {
     const cfg = readConfig();
-    if (!cfg.apiKey) {
+    // demoMode 下用 FakeLLM，不需要 apiKey；非 demoMode 必须有 key
+    if (!cfg.demoMode && !cfg.apiKey) {
       const choice = await window.showErrorMessage(
-        "还未配置 API Key。请在设置里填写 interview.apiKey。",
+        "还未配置 API Key。请在设置里填写 interview.apiKey，或开启 interview.demoMode 体验零费用演示。",
         "打开设置",
       );
       if (choice === "打开设置") {
-        commands.executeCommand("workbench.action.openSettings", "interview.apiKey");
+        commands.executeCommand("workbench.action.openSettings", "interview");
       }
       return;
     }
 
-    const workspaceFolder = workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspaceFolder) {
-      window.showErrorMessage("请先打开一个项目文件夹（面试官需要知道你的项目在哪）。");
-      return;
-    }
-
-    const scriptPath = path.join(workspaceFolder, "agent", "main.py");
+    // "被面试"的项目 = 用户当前打开的文件夹（面试官翻这里的代码）
+    const intervieweeProject =
+      workspace.workspaceFolders?.[0]?.uri.fsPath ?? repoRoot;
 
     const panel = new InterviewPanel(htmlBasePath, {
       pythonPath: cfg.pythonPath,
-      scriptPath,
-      workspace: workspaceFolder,
-      apiKey: cfg.apiKey,
+      scriptPath: agentScriptPath,
+      workspace: intervieweeProject,
+      // PYTHONPATH 用仓库根（agent 包所在），不随被面试项目变
+      pythonPathRoot: repoRoot,
+      apiKey: cfg.apiKey || "demo",
       model: cfg.model,
       baseUrl: cfg.baseUrl || undefined,
       resume: cfg.resume || undefined,
+      demoMode: cfg.demoMode,
     });
     panel.open();
   });

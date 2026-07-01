@@ -50,6 +50,11 @@
           "type": "string",
           "default": "python",
           "description": "Python 解释器路径（用于启动 Agent 内核）。默认用系统 PATH 里的 python。"
+        },
+        "interview.demoMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "演示模式：用内置 FakeLLM 代替真实 API，零费用跑完整闭环。用于无 API 额度时体验面试官对话效果。"
         }
       }
     },

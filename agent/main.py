@@ -15,6 +15,13 @@
 
 import sys
 
+# Windows 默认 stdout/stderr 用系统编码（GBK/cp936），会导致中文输出
+# 在某些字符上抛 UnicodeEncodeError。强制改为 UTF-8，与协议约定一致
+# （设计第 1.6 节：stdio 用 UTF-8 JSON）。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import agent.protocol as protocol
 from agent.session import SessionStore
 
@@ -127,6 +134,11 @@ def _handle_chat(store: SessionStore, params: dict) -> None:
         loop.run(text, on_tool_call=on_tool_call, on_response=on_response)
     except Exception as e:
         # LLM 调用失败等：发 error，不杀进程（设计第 6.4.1 节）
+        import traceback
+        tb = traceback.format_exc()
+        # 完整堆栈打到 stderr（显示在 VS Code 的 Interview Agent 输出通道，便于诊断）
+        sys.stderr.write(tb)
+        sys.stderr.flush()
         protocol.notify_error(session, f"Agent 执行失败: {type(e).__name__}: {e}")
         return
 

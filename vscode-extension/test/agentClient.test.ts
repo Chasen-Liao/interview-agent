@@ -119,6 +119,7 @@ describe("AgentClient 集成（真实子进程路由）", () => {
       pythonPath: process.execPath, // node 当 "python"
       scriptPath: "-e", // node -e <script> 形式
       workspace: "/fake",
+      pythonPathRoot: "/fake",
       apiKey: "sk-fake",
       model: "m",
       session: "test-session",

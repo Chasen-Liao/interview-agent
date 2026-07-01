@@ -203,11 +203,7 @@
     }
   });
 
-  // 输入框自动增高
-  inputEl.addEventListener("input", () => {
-    inputEl.style.height = "auto";
-    inputEl.style.height = inputEl.scrollHeight + "px";
-  });
+  // 输入框为固定高度（CSS 控制），内容超出时内部滚动，无需 JS 动态增高
 
   inputEl.focus();
 })();
