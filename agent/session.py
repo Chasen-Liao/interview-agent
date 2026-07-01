@@ -57,6 +57,12 @@ class SessionStore:
         self._base_url: str | None = None
         self._resume: str | None = None
 
+        # 调优参数（设计第 6.2、6.4 节，Phase 7-D 可配化）。
+        # 默认 None：在 _create_loop 里取各自模块的硬编码默认值。
+        self._max_steps: int | None = None
+        self._max_history_tokens: int | None = None
+        self._max_kept_full: int | None = None
+
         # 每个 session 一个 AgentLoop（含独立历史）
         self._loops: dict[str, AgentLoop] = {}
 
@@ -78,16 +84,26 @@ class SessionStore:
         model: str = "gpt-4o-mini",
         base_url: str | None = None,
         resume: str | None = None,
+        # 调优参数（Phase 7-D 可配化，不传则用各模块默认值）
+        max_steps: int | None = None,
+        max_history_tokens: int | None = None,
+        max_kept_full: int | None = None,
     ) -> None:
         """记录 init 消息带来的全局配置。
 
         这些配置在所有 session 间共享（同一进程管一个 workspace）。
+
+        调优参数（max_steps/max_history_tokens/max_kept_full）可选，
+        传 None 表示用各模块的硬编码默认值（设计第 6.2、6.4 节）。
         """
         self._workspace = workspace
         self._api_key = api_key
         self._model = model
         self._base_url = base_url
         self._resume = resume
+        self._max_steps = max_steps
+        self._max_history_tokens = max_history_tokens
+        self._max_kept_full = max_kept_full
 
     @property
     def workspace(self) -> str | None:
@@ -135,6 +151,10 @@ class SessionStore:
             llm=llm,
             tools=tools,
             system_prompt=system_msg["content"],
+            # 调优参数透传（Phase 7-D，None 用默认值）
+            max_steps=self._max_steps if self._max_steps is not None else 8,
+            max_history_tokens=self._max_history_tokens,
+            max_kept_full=self._max_kept_full,
         )
 
         # 尝试从盘恢复历史（设计第 6.4.3 节）

@@ -283,3 +283,135 @@ class TestEndToEndSession:
         contents = [m["content"] for m in loop2.messages]
         assert "我做了一个选课系统" in contents
         assert "你用了什么数据库？" in contents
+
+
+# ──────────────────────────────────────────────
+# 参数可配化测试（设计第 6.2、6.4 节，Phase 7-D）
+# ──────────────────────────────────────────────
+
+
+class TestTunableParams:
+    """验证调优参数从 configure 透传到 AgentLoop / history 函数。"""
+
+    def test_max_steps_passed_to_loop(self, tmp_path):
+        """configure 传 max_steps → AgentLoop 用这个值（非默认 8）。"""
+        store, _ = make_store(tmp_path)
+        store.configure(
+            workspace=str(tmp_path),
+            api_key="sk-test",
+            max_steps=3,
+        )
+        loop = store.get_or_create("s1")
+        assert loop._max_steps == 3  # noqa: SLF001
+
+    def test_max_steps_default_when_not_configured(self, tmp_path):
+        """不传 max_steps → 用默认值 8。"""
+        store, _ = make_store(tmp_path)
+        store.configure(workspace=str(tmp_path), api_key="sk-test")
+        loop = store.get_or_create("s1")
+        assert loop._max_steps == 8  # noqa: SLF001
+
+    def test_max_history_tokens_passed_to_loop(self, tmp_path):
+        """configure 传 max_history_tokens → AgentLoop 持有这个值。"""
+        store, _ = make_store(tmp_path)
+        store.configure(
+            workspace=str(tmp_path),
+            api_key="sk-test",
+            max_history_tokens=5000,
+        )
+        loop = store.get_or_create("s1")
+        assert loop._max_history_tokens == 5000  # noqa: SLF001
+
+    def test_max_kept_full_passed_to_loop(self, tmp_path):
+        """configure 传 max_kept_full → AgentLoop 持有这个值。"""
+        store, _ = make_store(tmp_path)
+        store.configure(
+            workspace=str(tmp_path),
+            api_key="sk-test",
+            max_kept_full=5,
+        )
+        loop = store.get_or_create("s1")
+        assert loop._max_kept_full == 5  # noqa: SLF001
+
+    def test_params_take_effect_in_run(self, tmp_path):
+        """★ 实际效果：max_steps=1 时，调一次工具后必须停（而非继续）。"""
+        from agent.llm_client import make_tool_call_response
+        # 脚本：先调工具（第1步），按 max_steps=1 跑满应触发安全阀
+        store, _ = make_store(
+            tmp_path,
+            script=[make_tool_call_response("list_directory", {"path": "."})],
+        )
+        store.configure(
+            workspace=str(tmp_path),
+            api_key="sk-test",
+            max_steps=1,  # 只允许 1 步：调完工具就到上限
+        )
+        loop = store.get_or_create("s1")
+        result = loop.run("看看项目")
+
+        # max_steps=1：调一次工具后没有第 2 步，应触发安全阀提示
+        assert "最大推理步数" in result
+
+    def test_max_history_tokens_truncates_history(self, tmp_path):
+        """★ 实际效果：max_history_tokens 很小时，历史被裁剪。"""
+        from agent.llm_client import make_text_response
+        # 用一个很小的 token 上限，强制触发裁剪
+        store, _ = make_store(
+            tmp_path,
+            script=[
+                make_text_response("答1"),
+                make_text_response("答2"),
+                make_text_response("答3"),
+            ],
+        )
+        store.configure(
+            workspace=str(tmp_path),
+            api_key="sk-test",
+            max_history_tokens=50,  # 极小，强制裁剪
+        )
+        loop = store.get_or_create("s1")
+        loop.run("问1")
+        loop.run("问2")
+        loop.run("问3")
+
+        # token 上限 50 很小，中间老消息应被裁掉，但 system 和最新消息保留
+        assert loop.messages[0]["role"] == "system"  # system 永不删
+        assert loop.messages[-1]["role"] == "assistant"  # 最新保留
+
+
+class TestInitParamsPassThrough:
+    """验证 main._handle_init 把调优参数透传给 SessionStore。"""
+
+    def test_init_with_tuning_params(self, tmp_path):
+        """init 消息带调优参数 → store.configure 收到。"""
+        store = SessionStore()
+        store._sessions_dir = str(tmp_path / ".sessions")  # noqa: SLF001
+
+        import agent.main as main_mod
+        main_mod._handle_init(store, {
+            "workspace": str(tmp_path),
+            "api_key": "sk-x",
+            "model": "m",
+            "max_steps": 5,
+            "max_history_tokens": 10000,
+            "max_kept_full": 2,
+        })
+
+        assert store._max_steps == 5  # noqa: SLF001
+        assert store._max_history_tokens == 10000  # noqa: SLF001
+        assert store._max_kept_full == 2  # noqa: SLF001
+
+    def test_init_without_tuning_params_uses_defaults(self, tmp_path):
+        """init 不带调优参数 → store 用 None（建 loop 时取默认值）。"""
+        store = SessionStore()
+        store._sessions_dir = str(tmp_path / ".sessions")  # noqa: SLF001
+
+        import agent.main as main_mod
+        main_mod._handle_init(store, {
+            "workspace": str(tmp_path),
+            "api_key": "sk-x",
+        })
+
+        assert store._max_steps is None  # noqa: SLF001
+        assert store._max_history_tokens is None  # noqa: SLF001
+        assert store._max_kept_full is None  # noqa: SLF001

@@ -54,11 +54,17 @@ class AgentLoop:
         tools: ToolRegistry,
         system_prompt: str,
         max_steps: int = 8,  # 设计第 2.5 节安全阀
+        # 历史管理参数（设计第 6.2 节，Phase 7-D 可配化）。
+        # None 表示用 history 模块的默认值（20000 / 3）。
+        max_history_tokens: int | None = None,
+        max_kept_full: int | None = None,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._system_prompt = system_prompt
         self._max_steps = max_steps
+        self._max_history_tokens = max_history_tokens
+        self._max_kept_full = max_kept_full
         # 对话历史：整个 session 复用一份
         # 第一条永远是系统提示（设计第 6.2.3 节：永不删除）
         self._messages: list[dict] = [{"role": "system", "content": system_prompt}]
@@ -92,8 +98,15 @@ class AgentLoop:
 
         for step in range(self._max_steps):
             # ── 每轮调 LLM 前：管理历史（设计第 6.2 节）──
-            self._messages = compress_history(self._messages)
-            self._messages = enforce_token_limit(self._messages)
+            # 参数透传：None 时用 history 模块默认值（Phase 7-D 可配化）
+            if self._max_kept_full is not None:
+                self._messages = compress_history(self._messages, self._max_kept_full)
+            else:
+                self._messages = compress_history(self._messages)
+            if self._max_history_tokens is not None:
+                self._messages = enforce_token_limit(self._messages, self._max_history_tokens)
+            else:
+                self._messages = enforce_token_limit(self._messages)
 
             # ── 调 LLM ──
             response = self._llm.chat(self._messages, tools_schema)

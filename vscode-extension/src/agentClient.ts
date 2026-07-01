@@ -40,6 +40,10 @@ export interface AgentClientOptions {
   resume?: string;
   /** 会话 id（init 时带上，便于 Python 落盘隔离）。 */
   session?: string;
+  // 调优参数（Phase 7-D 可配化，可选；不传 Python 用默认值）
+  maxSteps?: number;
+  maxHistoryTokens?: number;
+  maxKeptFull?: number;
   /**
    * 演示模式（设计第 5E 节冒烟）：true 时用 FakeLLM 代替真实 API，
    * 零费用跑完整闭环，展示面试官对话/工具气泡/流式效果。
@@ -116,6 +120,10 @@ export class AgentClient {
       base_url: this.options.baseUrl,
       resume: this.options.resume,
       session: this.options.session,
+      // 调优参数透传（Phase 7-D，undefined 则 Python 用默认值）
+      max_steps: this.options.maxSteps,
+      max_history_tokens: this.options.maxHistoryTokens,
+      max_kept_full: this.options.maxKeptFull,
     }));
   }
 

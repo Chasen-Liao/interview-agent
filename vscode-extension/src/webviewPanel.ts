@@ -43,6 +43,10 @@ export interface PanelOptions {
   resume?: string;
   /** 演示模式：用 FakeLLM，零费用（设计第 5E 节冒烟）。 */
   demoMode?: boolean;
+  // 调优参数（Phase 7-D 可配化，可选）
+  maxSteps?: number;
+  maxHistoryTokens?: number;
+  maxKeptFull?: number;
 }
 
 export class InterviewPanel {
@@ -67,6 +71,9 @@ export class InterviewPanel {
       resume: options.resume,
       session: this.sessionId,
       demoMode: options.demoMode,
+      maxSteps: options.maxSteps,
+      maxHistoryTokens: options.maxHistoryTokens,
+      maxKeptFull: options.maxKeptFull,
     });
   }
 

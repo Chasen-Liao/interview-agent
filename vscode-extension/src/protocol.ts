@@ -27,6 +27,10 @@ export interface InitRequest {
     base_url?: string;
     resume?: string;
     session?: string;
+    // 调优参数（Phase 7-D 可配化，可选；不传则 Python 用默认值）
+    max_steps?: number;
+    max_history_tokens?: number;
+    max_kept_full?: number;
   };
 }
 

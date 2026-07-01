@@ -27,6 +27,9 @@ interface InterviewConfig {
   resume: string;
   pythonPath: string;
   demoMode: boolean;
+  maxSteps: number;
+  maxHistoryTokens: number;
+  maxKeptFull: number;
 }
 
 function readConfig(): InterviewConfig {
@@ -38,6 +41,9 @@ function readConfig(): InterviewConfig {
     resume: cfg.get<string>("resume", ""),
     pythonPath: cfg.get<string>("pythonPath", "python"),
     demoMode: cfg.get<boolean>("demoMode", false),
+    maxSteps: cfg.get<number>("maxSteps", 8),
+    maxHistoryTokens: cfg.get<number>("maxHistoryTokens", 20000),
+    maxKeptFull: cfg.get<number>("maxKeptFull", 3),
   };
 }
 
@@ -81,6 +87,10 @@ export function activate(context: ExtensionContext): void {
       baseUrl: cfg.baseUrl || undefined,
       resume: cfg.resume || undefined,
       demoMode: cfg.demoMode,
+      // 调优参数透传（Phase 7-D 可配化）
+      maxSteps: cfg.maxSteps,
+      maxHistoryTokens: cfg.maxHistoryTokens,
+      maxKeptFull: cfg.maxKeptFull,
     });
     panel.open();
   });

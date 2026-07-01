@@ -55,6 +55,21 @@
           "type": "boolean",
           "default": false,
           "description": "演示模式：用内置 FakeLLM 代替真实 API，零费用跑完整闭环。用于无 API 额度时体验面试官对话效果。"
+        },
+        "interview.maxSteps": {
+          "type": "number",
+          "default": 8,
+          "description": "Agent 单轮循环最大步数（安全阀）。LLM 一直调工具不收敛时，跑满此值停止。调大=更彻底但更慢更贵，调小=更快但可能没查够。"
+        },
+        "interview.maxHistoryTokens": {
+          "type": "number",
+          "default": 20000,
+          "description": "对话历史 token 上限。超过时从最老的对话开始丢弃（保留系统提示和最新消息）。调小=省钱但可能丢上下文，调大=上下文全但更贵。"
+        },
+        "interview.maxKeptFull": {
+          "type": "number",
+          "default": 3,
+          "description": "历史里保留完整（不压缩）的工具结果数量。最近的 N 个保留完整，更早的压成摘要。调大=保留更多代码细节但更贵。"
         }
       }
     },

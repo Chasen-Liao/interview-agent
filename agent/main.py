@@ -77,6 +77,10 @@ def _handle_init(store: SessionStore, params: dict) -> None:
     model = params.get("model", "gpt-4o-mini")
     base_url = params.get("base_url")
     resume = params.get("resume")
+    # 调优参数（Phase 7-D，可选；TS 侧传整数，不传则 None 用默认）
+    max_steps = params.get("max_steps")
+    max_history_tokens = params.get("max_history_tokens")
+    max_kept_full = params.get("max_kept_full")
 
     if not workspace or not api_key:
         protocol.notify_error(
@@ -91,6 +95,9 @@ def _handle_init(store: SessionStore, params: dict) -> None:
         model=model,
         base_url=base_url,
         resume=resume,
+        max_steps=max_steps,
+        max_history_tokens=max_history_tokens,
+        max_kept_full=max_kept_full,
     )
 
 
