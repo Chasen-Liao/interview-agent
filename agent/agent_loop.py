@@ -80,13 +80,19 @@ class AgentLoop:
         user_text: str,
         on_tool_call: ToolCallCallback | None = None,
         on_response: ResponseCallback | None = None,
+        on_delta: Any = None,
     ) -> str:
         """跑一轮 Agent 循环。
+
+        on_delta（可选）：流式文本回调（设计第 1.6 节，Phase 7-C）。
+        每收到一段 LLM 文本就调一次，实现打字效果。
+        传了它，chat 内部用 stream=True；不传则非流式。
 
         参数：
             user_text:    用户这一轮说的话
             on_tool_call: 工具调用回调（可选）
             on_response:  最终回答回调（可选）
+            on_delta:     流式文本片段回调（可选，Phase 7-C）
 
         返回：Agent 的最终文本回答
         """
@@ -108,8 +114,8 @@ class AgentLoop:
             else:
                 self._messages = enforce_token_limit(self._messages)
 
-            # ── 调 LLM ──
-            response = self._llm.chat(self._messages, tools_schema)
+            # ── 调 LLM（传 on_delta 启用流式，Phase 7-C）──
+            response = self._llm.chat(self._messages, tools_schema, on_delta=on_delta)
 
             if response.tool_calls:
                 # LLM 想调工具：处理所有工具调用，继续循环

@@ -194,7 +194,6 @@ class SessionStore:
         永不耗尽，让用户能持续体验面试官对话效果。
         """
         from agent.llm_client import (
-            LLMResponse,
             make_text_response,
             make_tool_call_response,
         )
@@ -320,13 +319,19 @@ class _DemoLLM:
         self._fallback = fallback
         self._call_count = 0
 
-    def chat(self, messages, tools):
+    def chat(self, messages, tools, on_delta=None):
         # 脚本未耗尽：按顺序返回
         if self._call_count < len(self._initial):
             resp = self._initial[self._call_count]
             self._call_count += 1
+            # 伪流式兼容：文本响应时推一次 delta（保持流式接口一致）
+            if on_delta is not None and resp.content and not resp.tool_calls:
+                on_delta(resp.content)
             return resp
         # 脚本耗尽：循环复用 fallback（永不报错）
         idx = (self._call_count - len(self._initial)) % len(self._fallback)
         self._call_count += 1
-        return self._fallback[idx]
+        resp = self._fallback[idx]
+        if on_delta is not None and resp.content:
+            on_delta(resp.content)
+        return resp

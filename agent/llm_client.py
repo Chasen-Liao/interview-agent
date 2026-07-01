@@ -4,8 +4,8 @@
 测试用 FakeLLM（零费用、确定），真实运行用 OpenAIClient。
 """
 
-from dataclasses import dataclass, field
 import time
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 
@@ -125,8 +125,13 @@ class LLMClient(Protocol):
         self,
         messages: list[dict],
         tools: list[dict],
+        on_delta: Any = None,  # 可选：流式文本回调 Callable[[str], None]
     ) -> LLMResponse:
-        """调一次 LLM，返回结构化响应。"""
+        """调一次 LLM，返回结构化响应。
+
+        on_delta（可选）：流式输出时，每收到一段文本就调一次回调
+        （设计第 1.6 节打字效果）。非流式实现（FakeLLM）可忽略此参数。
+        """
         ...
 
 
@@ -149,7 +154,12 @@ class FakeLLM:
         self._index = 0
         self.call_count = 0  # 测试用：验证 Agent 循环调了几次
 
-    def chat(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        on_delta: Any = None,
+    ) -> LLMResponse:
         self.call_count += 1
         if self._index >= len(self._script):
             raise RuntimeError(
@@ -158,6 +168,10 @@ class FakeLLM:
             )
         response = self._script[self._index]
         self._index += 1
+        # 伪流式：传了 on_delta 且是文本响应时，整段推一次（FakeLLM 不真分段，
+        # 但保持接口兼容，让流式链路在测试里也能走通）
+        if on_delta is not None and response.content and not response.tool_calls:
+            on_delta(response.content)
         return response
     
 
@@ -207,7 +221,12 @@ class OpenAIClient:
         self._model = model
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
-    def chat(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        on_delta: Any = None,
+    ) -> LLMResponse:
         # 终极防御：清掉所有数据里的孤立代理项。
         # Windows 文件名/文件内容可能含 \udcaa 等代理项，openai 序列化请求
         # body 时会抛 UnicodeEncodeError。在调用前递归清理整个数据结构。
@@ -221,14 +240,109 @@ class OpenAIClient:
         if tools:  # 没工具时不传 tools 参数（有些模型会报错）
             kwargs["tools"] = tools
 
-        # 自动重试（设计第 6.4.2 节延伸）：仅对可恢复错误重试（429/断网/超时/5xx）。
-        # 不可恢复错误（401 auth）不重试——重试也是 401，浪费。
-        # 用 _call_with_retry 包住实际请求，把错误分类留给外层统一处理。
+        # 流式 vs 非流式（设计第 1.6、6.5 节）：
+        # 传了 on_delta 回调 → 用 stream=True，边收边推 delta（打字效果）
+        # 没传 → 非流式（简单，FakeLLM/测试默认路径）
+        if on_delta is not None:
+            return self._chat_streaming(kwargs, on_delta)
+        return self._chat_blocking(kwargs)
+
+    def _chat_blocking(self, kwargs: dict[str, Any]) -> LLMResponse:
+        """非流式调用（默认路径，FakeLLM/单测用）。"""
         response = self._call_with_retry(kwargs)
-
         message = response.choices[0].message
+        return self._build_response(message)
 
-        # 提取文本和工具调用
+    def _chat_streaming(
+        self, kwargs: dict[str, Any], on_delta: Any,
+    ) -> LLMResponse:
+        """流式调用（设计第 1.6、6.5 节）。
+
+        - 边收边把文本 delta 通过 on_delta 推出去（打字效果）
+        - tool_calls 分片到达，累积拼接（openai 流式的 arguments 是分段的）
+        - 中断保留（设计 6.5）：网络断了保留已收部分，追加错误标记，不丢文字
+
+        返回累积后的完整 LLMResponse（和 _chat_blocking 相同接口）。
+        """
+        kwargs["stream"] = True
+
+        accumulated_content = ""
+        # tool_calls 分片累积：{index: {id, name, arguments_parts}}
+        tool_calls_acc: dict[int, dict] = {}
+
+        try:
+            stream = self._client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+
+                # 文本 delta：累积 + 实时推出
+                if delta.content:
+                    accumulated_content += delta.content
+                    try:
+                        on_delta(delta.content)
+                    except Exception:
+                        # 回调失败不影响主流程
+                        pass
+
+                # tool_calls 分片：按 index 累积
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                "id": tc.id or "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        slot = tool_calls_acc[idx]
+                        if tc.id:
+                            slot["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                slot["name"] += tc.function.name
+                            if tc.function.arguments:
+                                slot["arguments"] += tc.function.arguments
+
+        except Exception as e:
+            # 中断保留（设计第 6.5 节）：流式中途出错（断网等）
+            # 保留已生成的文本，追加错误标记，让用户知道生成被中断
+            import openai as _openai
+            if isinstance(e, _openai.APIError):
+                err = _classify_openai_error(e)
+                # 可恢复错误且已有内容：保留 + 标记中断
+                if accumulated_content and err.kind in (
+                    ERROR_KIND_CONNECTION, ERROR_KIND_SERVER, ERROR_KIND_RATE_LIMIT,
+                ):
+                    return LLMResponse(
+                        content=accumulated_content
+                        + "\n\n⚠️ 生成中断（"
+                        + err.message
+                        + "）。已生成部分保留，可重新发送。",
+                    )
+                # 不可恢复或无内容：抛错（走外层错误处理）
+                raise err
+            raise
+
+        # 组装 tool_calls（按 index 排序）
+        tool_calls = []
+        for idx in sorted(tool_calls_acc):
+            slot = tool_calls_acc[idx]
+            tool_calls.append({
+                "id": slot["id"],
+                "type": "function",
+                "function": {
+                    "name": slot["name"],
+                    "arguments": slot["arguments"],
+                },
+            })
+
+        return LLMResponse(content=accumulated_content, tool_calls=tool_calls)
+
+    @staticmethod
+    def _build_response(message: Any) -> LLMResponse:
+        """从 openai message 对象构造 LLMResponse（非流式路径用）。"""
         content = message.content or ""
         tool_calls = []
         if message.tool_calls:
@@ -241,7 +355,6 @@ class OpenAIClient:
                         "arguments": tc.function.arguments,
                     },
                 })
-
         return LLMResponse(content=content, tool_calls=tool_calls)
 
     def _call_with_retry(self, kwargs: dict[str, Any]):

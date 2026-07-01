@@ -132,16 +132,27 @@ def _handle_chat(store: SessionStore, params: dict) -> None:
             result=result,
         )
 
+    # 流式回调（设计第 1.6 节，Phase 7-C）：每段文本实时推给前端。
+    # on_delta 已经分段推了，所以下面的 on_response 不再整段重复发。
+    def on_delta(delta):
+        protocol.notify_stream(session, delta)
+
     def on_response(content):
-        # MVP 用非流式：整段回答一次性发出（Phase 7 加真实流式时分段）
-        # 设计第 2.7 节：真正有文本的是最后一轮，这里整段发即可
-        protocol.notify_stream(session, content)
+        # 流式模式下文本已由 on_delta 分段推出，这里不再整段重发。
+        # （content 用于 loop 内部记录历史，不用来推通知。）
+        pass
 
     try:
-        loop.run(text, on_tool_call=on_tool_call, on_response=on_response)
+        loop.run(
+            text,
+            on_tool_call=on_tool_call,
+            on_response=on_response,
+            on_delta=on_delta,
+        )
     except Exception as e:
         # LLM 调用失败等：发 error，不杀进程（设计第 6.4.1 节）
         import traceback
+
         from agent.llm_client import LLMError
 
         tb = traceback.format_exc()

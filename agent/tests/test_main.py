@@ -182,7 +182,7 @@ class TestAttachedCode:
         fake = FakeLLM([make_text_response("ok")])
         original_chat = fake.chat
 
-        def spy_chat(messages, tools):
+        def spy_chat(messages, tools, on_delta=None):
             captured.append(messages)
             return original_chat(messages, tools)
 
@@ -212,7 +212,7 @@ class TestAttachedCode:
         fake = FakeLLM([make_text_response("ok")])
         original_chat = fake.chat
 
-        def spy_chat(messages, tools):
+        def spy_chat(messages, tools, on_delta=None):
             captured.append(messages)
             return original_chat(messages, tools)
 

@@ -201,6 +201,7 @@ class TestClassifyOpenAIError:
     def test_authentication_error_classified_as_auth(self):
         """401 key 无效 → auth 类（不可恢复）。"""
         import openai
+
         from agent.llm_client import (
             ERROR_KIND_AUTH,
             _classify_openai_error,
@@ -215,6 +216,7 @@ class TestClassifyOpenAIError:
     def test_rate_limit_error_classified_as_rate_limit(self):
         """429 限流 → rate_limit 类（可恢复）。"""
         import openai
+
         from agent.llm_client import (
             ERROR_KIND_RATE_LIMIT,
             _classify_openai_error,
@@ -227,6 +229,7 @@ class TestClassifyOpenAIError:
     def test_api_connection_error_classified_as_connection(self):
         """断网 → connection 类（可恢复）。"""
         import openai
+
         from agent.llm_client import (
             ERROR_KIND_CONNECTION,
             _classify_openai_error,
@@ -239,6 +242,7 @@ class TestClassifyOpenAIError:
     def test_timeout_classified_as_connection(self):
         """超时 → connection 类（超时是连接问题的子类）。"""
         import openai
+
         from agent.llm_client import (
             ERROR_KIND_CONNECTION,
             _classify_openai_error,
@@ -251,6 +255,7 @@ class TestClassifyOpenAIError:
     def test_internal_server_error_classified_as_server(self):
         """5xx → server 类（可恢复）。"""
         import openai
+
         from agent.llm_client import (
             ERROR_KIND_SERVER,
             _classify_openai_error,
@@ -263,6 +268,7 @@ class TestClassifyOpenAIError:
     def test_unknown_error_fallback(self):
         """其他 openai 异常 → unknown 类。"""
         import openai
+
         from agent.llm_client import (
             ERROR_KIND_UNKNOWN,
             _classify_openai_error,
@@ -275,6 +281,7 @@ class TestClassifyOpenAIError:
     def test_classified_message_is_user_friendly(self):
         """分类后的提示是友好的中文（给用户看的）。"""
         import openai
+
         from agent.llm_client import _classify_openai_error
         err = self._make_status_error(openai.AuthenticationError, 401)
         result = _classify_openai_error(err)
@@ -372,9 +379,6 @@ class TestAutoRetry:
 
     def test_retries_on_rate_limit_then_succeeds(self, monkeypatch):
         """★ 前 2 次 429，第 3 次成功 → 应该重试并返回结果。"""
-        import httpx
-        import openai
-        from agent.llm_client import LLMError
 
         # 构造 fake response
         class FakeMsg:
@@ -452,8 +456,8 @@ class TestAutoRetry:
 
     def _make_rate_limit_error(self):
         """构造一个 RateLimitError（429）。"""
-        import openai
         import httpx
+        import openai
         request = httpx.Request("POST", "https://api.test.com/chat")
         response = httpx.Response(
             429, request=request,
@@ -463,11 +467,215 @@ class TestAutoRetry:
 
     def _make_auth_error(self):
         """构造一个 AuthenticationError（401）。"""
-        import openai
         import httpx
+        import openai
         request = httpx.Request("POST", "https://api.test.com/chat")
         response = httpx.Response(
             401, request=request,
             content=b'{"error":{"message":"bad key"}}',
         )
         return openai.AuthenticationError("bad key", response=response, body=None)
+
+
+# ──────────────────────────────────────────────
+# 流式输出测试（设计第 1.6、6.5 节，Phase 7-C）
+# ──────────────────────────────────────────────
+
+
+def _make_text_chunk(content):
+    """构造一个流式文本 chunk（模拟 openai 流式返回）。"""
+    class FakeDelta:
+        def __init__(self, content):
+            self.content = content
+            self.tool_calls = None
+    class FakeChoice:
+        def __init__(self, content):
+            self.delta = FakeDelta(content)
+    class FakeChunk:
+        def __init__(self, content):
+            self.choices = [FakeChoice(content)]
+    return FakeChunk(content)
+
+
+def _make_tool_call_chunks():
+    """构造 tool_calls 分片流（模拟 openai 流式分片到达）。
+
+    返回一个 chunk 列表，模拟 read_file("app.py") 分 3 次到达：
+    - chunk1: id + name="read_file"
+    - chunk2: arguments 部分 '{"path":"app'
+    - chunk3: arguments 部分 '.py"}'
+    """
+    class FakeFn:
+        def __init__(self, name=None, arguments=None):
+            self.name = name
+            self.arguments = arguments
+    class FakeTC:
+        def __init__(self, index, tc_id=None, name=None, arguments=None):
+            self.index = index
+            self.id = tc_id
+            self.function = FakeFn(name, arguments)
+    class FakeDelta:
+        def __init__(self, tool_calls):
+            self.content = None
+            self.tool_calls = tool_calls
+    class FakeChoice:
+        def __init__(self, tool_calls):
+            self.delta = FakeDelta(tool_calls)
+    class FakeChunk:
+        def __init__(self, tool_calls):
+            self.choices = [FakeChoice(tool_calls)]
+    return [
+        FakeChunk([FakeTC(0, tc_id="call_1", name="read_file")]),
+        FakeChunk([FakeTC(0, arguments='{"path":"app')]),
+        FakeChunk([FakeTC(0, arguments='.py"}')]),
+    ]
+
+
+class TestStreamingOutput:
+    """验证流式输出（on_delta 回调 + 累积，设计 1.6 节）。"""
+
+    def _make_streaming_client(self, chunks, monkeypatch):
+        """构造 OpenAIClient，mock create 返回流式 chunk 迭代器。"""
+        from agent.llm_client import OpenAIClient
+        client = OpenAIClient.__new__(OpenAIClient)
+        client._model = "test"
+
+        class MockCreate:
+            def __init__(self):
+                self.received_kwargs = None
+                self.calls = 0
+            def __call__(self, **kwargs):
+                self.calls += 1
+                self.received_kwargs = kwargs
+                return iter(chunks)
+
+        mock = MockCreate()
+
+        class MockChat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    return mock(**kw)
+        class MockClient:
+            def __init__(self):
+                self.chat = MockChat()
+        client._client = MockClient()
+        return client, mock
+
+    def test_text_deltas_pushed_via_on_delta(self, monkeypatch):
+        """★ 文本 chunk 通过 on_delta 实时分段推出。"""
+        chunks = [_make_text_chunk("你"), _make_text_chunk("好"), _make_text_chunk("呀")]
+        client, _ = self._make_streaming_client(chunks, monkeypatch)
+
+        received = []
+        resp = client.chat([], [], on_delta=received.append)
+
+        assert "".join(received) == "你好呀"  # 分 3 段收到
+        assert resp.content == "你好呀"  # 累积完整
+
+    def test_stream_true_added_when_on_delta_provided(self, monkeypatch):
+        """传 on_delta 时请求带 stream=True。"""
+        client, mock = self._make_streaming_client(
+            [_make_text_chunk("x")], monkeypatch,
+        )
+        client.chat([], [], on_delta=lambda s: None)
+        assert mock.received_kwargs.get("stream") is True
+
+    def test_no_stream_without_on_delta(self, monkeypatch):
+        """不传 on_delta 时用非流式（stream 不在 kwargs 里）。"""
+        # 非流式路径走 _call_with_retry，需 mock 成返回完整 response
+        from agent.llm_client import OpenAIClient
+        client = OpenAIClient.__new__(OpenAIClient)
+        client._model = "test"
+
+        class FakeMsg:
+            content = "hi"
+            tool_calls = None
+        class FakeChoice:
+            message = FakeMsg()
+        class FakeResp:
+            choices = [FakeChoice()]
+
+        class MockChat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    assert "stream" not in kw  # 非流式不该有 stream
+                    return FakeResp()
+        class MockClient:
+            def __init__(self):
+                self.chat = MockChat()
+        client._client = MockClient()
+
+        resp = client.chat([], [])  # 不传 on_delta
+        assert resp.content == "hi"
+
+    def test_tool_calls_accumulated_from_fragments(self, monkeypatch):
+        """★ 流式 tool_calls 分片到达，正确累积拼接。"""
+        chunks = _make_tool_call_chunks()
+        client, _ = self._make_streaming_client(chunks, monkeypatch)
+
+        resp = client.chat([], [], on_delta=lambda s: None)
+
+        assert len(resp.tool_calls) == 1
+        tc = resp.tool_calls[0]
+        assert tc["id"] == "call_1"
+        assert tc["function"]["name"] == "read_file"
+        # arguments 分 2 片拼接
+        assert tc["function"]["arguments"] == '{"path":"app.py"}'
+
+    def test_interruption_preserves_partial_content(self, monkeypatch):
+        """★ 中断保留（设计 6.5）：流式中途断网，保留已生成文本。"""
+        import openai
+
+        from agent.llm_client import OpenAIClient
+        client = OpenAIClient.__new__(OpenAIClient)
+        client._model = "test"
+
+        conn_err = openai.APIConnectionError(request=None)
+
+        def make_stream():
+            yield _make_text_chunk("已经生成的")
+            raise conn_err  # 第二个 chunk 前断网
+
+        class MockChat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    return make_stream()
+        class MockClient:
+            def __init__(self):
+                self.chat = MockChat()
+        client._client = MockClient()
+
+        received = []
+        resp = client.chat([], [], on_delta=received.append)
+
+        # 已生成部分保留，并追加中断标记
+        assert "已经生成的" in resp.content
+        assert "中断" in resp.content
+        assert received == ["已经生成的"]  # 已推的保留
+
+
+class TestFakeLLMStreamingCompat:
+    """FakeLLM 的 on_delta 兼容性（保持接口一致）。"""
+
+    def test_fake_llm_pushes_full_content_when_on_delta_given(self):
+        """FakeLLM 收到 on_delta 时把整段文本推一次（伪流式）。"""
+        fake = FakeLLM([make_text_response("完整回答")])
+        received = []
+        fake.chat([], [], on_delta=received.append)
+        assert received == ["完整回答"]
+
+    def test_fake_llm_no_delta_when_tool_response(self):
+        """FakeLLM 返回工具调用时不推 delta（只有文本才推）。"""
+        fake = FakeLLM([make_tool_call_response("read_file", {"path": "a.py"})])
+        received = []
+        fake.chat([], [], on_delta=received.append)
+        assert received == []  # 工具响应不推文本
+
+    def test_fake_llm_works_without_on_delta(self):
+        """不传 on_delta 时 FakeLLM 行为不变（向后兼容）。"""
+        fake = FakeLLM([make_text_response("x")])
+        resp = fake.chat([], [])
+        assert resp.content == "x"

@@ -376,3 +376,92 @@ class TestCallbacks:
         # 不传任何回调，应该不报错
         result = loop.run("test")
         assert result == "done"
+
+
+# ──────────────────────────────────────────────
+# 流式透传测试（设计第 1.6 节，Phase 7-C）
+# ──────────────────────────────────────────────
+
+
+class TestStreamingPassthrough:
+    """验证 agent_loop.run 把 on_delta 透传给 LLMClient.chat。"""
+
+    def test_on_delta_passed_to_chat(self):
+        """★ run 传 on_delta → chat 收到（通过自定义 LLM 验证）。"""
+        from agent.agent_loop import AgentLoop
+        from agent.llm_client import LLMResponse
+        from agent.tools.base import ToolRegistry
+
+        received_delta_kwargs = []
+
+        class SpyLLM:
+            def __init__(self):
+                self.received_delta = None
+            def chat(self, messages, tools, on_delta=None):
+                received_delta_kwargs.append(on_delta)
+                self.received_delta = on_delta
+                # 模拟伪流式：推一次文本
+                if on_delta is not None:
+                    on_delta("流式片段")
+                return LLMResponse(content="最终回答")
+
+        spy = SpyLLM()
+        loop = AgentLoop(
+            llm=spy, tools=ToolRegistry(), system_prompt="sys",
+        )
+        deltas = []
+        loop.run("问", on_delta=deltas.append)
+
+        assert spy.received_delta is not None  # chat 收到了 on_delta
+        assert deltas == ["流式片段"]  # delta 被推到了 run 的回调
+
+    def test_no_on_delta_passes_none_to_chat(self):
+        """不传 on_delta → chat 收到 None（非流式）。"""
+        from agent.agent_loop import AgentLoop
+        from agent.llm_client import LLMResponse
+        from agent.tools.base import ToolRegistry
+
+        class SpyLLM:
+            def __init__(self):
+                self.received_delta = "unset"
+            def chat(self, messages, tools, on_delta="unset"):
+                self.received_delta = on_delta
+                return LLMResponse(content="答")
+
+        spy = SpyLLM()
+        loop = AgentLoop(
+            llm=spy, tools=ToolRegistry(), system_prompt="sys",
+        )
+        loop.run("问")  # 不传 on_delta
+
+        assert spy.received_delta is None  # None 表示非流式
+
+    def test_streaming_works_with_tool_calls(self):
+        """流式模式下工具调用轮次正常（不推 delta，正常循环）。"""
+        import tempfile
+
+        from agent.agent_loop import AgentLoop
+        from agent.llm_client import (
+            FakeLLM,
+            make_text_response,
+            make_tool_call_response,
+        )
+        from agent.tools.base import ToolRegistry
+        from agent.tools.builtin import ListDirectoryTool
+
+        registry = ToolRegistry()
+        registry.register(ListDirectoryTool(tempfile.gettempdir()))
+
+        fake = FakeLLM([
+            make_tool_call_response("list_directory", {"path": "."}),
+            make_text_response("流式最终回答"),
+        ])
+        loop = AgentLoop(
+            llm=fake, tools=registry, system_prompt="sys",
+        )
+        deltas = []
+        result = loop.run("看看", on_delta=deltas.append)
+
+        assert result == "流式最终回答"
+        # 工具调用轮不推文本 delta；最终回答轮推一次（FakeLLM 伪流式）
+        assert deltas == ["流式最终回答"]
