@@ -135,11 +135,21 @@ def _handle_chat(store: SessionStore, params: dict) -> None:
     except Exception as e:
         # LLM 调用失败等：发 error，不杀进程（设计第 6.4.1 节）
         import traceback
+        from agent.llm_client import LLMError
+
         tb = traceback.format_exc()
         # 完整堆栈打到 stderr（显示在 VS Code 的 Interview Agent 输出通道，便于诊断）
         sys.stderr.write(tb)
         sys.stderr.flush()
-        protocol.notify_error(session, f"Agent 执行失败: {type(e).__name__}: {e}")
+
+        # 按错误类型给用户不同提示（设计第 6.4.2 节）。
+        # LLMError 携带友好中文提示；其他异常用通用格式。
+        if isinstance(e, LLMError):
+            protocol.notify_error(session, e.message)
+        else:
+            protocol.notify_error(
+                session, f"Agent 执行失败: {type(e).__name__}: {e}"
+            )
         return
 
     # 落盘历史（每轮对话后存一次，设计第 6.4.3 节）

@@ -188,3 +188,286 @@ class TestLLMResponse:
 
         assert len(with_tool.tool_calls) > 0
         assert len(with_text.tool_calls) == 0
+
+
+# ──────────────────────────────────────────────
+# 错误分类测试（设计第 6.4.2 节，Phase 7-A）
+# ──────────────────────────────────────────────
+
+
+class TestClassifyOpenAIError:
+    """验证 _classify_openai_error 把各种 openai 异常映射成正确的 LLMError。"""
+
+    def test_authentication_error_classified_as_auth(self):
+        """401 key 无效 → auth 类（不可恢复）。"""
+        import openai
+        from agent.llm_client import (
+            ERROR_KIND_AUTH,
+            _classify_openai_error,
+        )
+        # 构造一个 AuthenticationError（需要 mock response）
+        err = self._make_status_error(openai.AuthenticationError, 401)
+        result = _classify_openai_error(err)
+
+        assert result.kind == ERROR_KIND_AUTH
+        assert "API key" in result.message or "key" in result.message
+
+    def test_rate_limit_error_classified_as_rate_limit(self):
+        """429 限流 → rate_limit 类（可恢复）。"""
+        import openai
+        from agent.llm_client import (
+            ERROR_KIND_RATE_LIMIT,
+            _classify_openai_error,
+        )
+        err = self._make_status_error(openai.RateLimitError, 429)
+        result = _classify_openai_error(err)
+
+        assert result.kind == ERROR_KIND_RATE_LIMIT
+
+    def test_api_connection_error_classified_as_connection(self):
+        """断网 → connection 类（可恢复）。"""
+        import openai
+        from agent.llm_client import (
+            ERROR_KIND_CONNECTION,
+            _classify_openai_error,
+        )
+        err = openai.APIConnectionError(request=None)
+        result = _classify_openai_error(err)
+
+        assert result.kind == ERROR_KIND_CONNECTION
+
+    def test_timeout_classified_as_connection(self):
+        """超时 → connection 类（超时是连接问题的子类）。"""
+        import openai
+        from agent.llm_client import (
+            ERROR_KIND_CONNECTION,
+            _classify_openai_error,
+        )
+        err = openai.APITimeoutError(request=None)
+        result = _classify_openai_error(err)
+
+        assert result.kind == ERROR_KIND_CONNECTION
+
+    def test_internal_server_error_classified_as_server(self):
+        """5xx → server 类（可恢复）。"""
+        import openai
+        from agent.llm_client import (
+            ERROR_KIND_SERVER,
+            _classify_openai_error,
+        )
+        err = self._make_status_error(openai.InternalServerError, 503)
+        result = _classify_openai_error(err)
+
+        assert result.kind == ERROR_KIND_SERVER
+
+    def test_unknown_error_fallback(self):
+        """其他 openai 异常 → unknown 类。"""
+        import openai
+        from agent.llm_client import (
+            ERROR_KIND_UNKNOWN,
+            _classify_openai_error,
+        )
+        err = self._make_status_error(openai.APIStatusError, 418)
+        result = _classify_openai_error(err)
+
+        assert result.kind == ERROR_KIND_UNKNOWN
+
+    def test_classified_message_is_user_friendly(self):
+        """分类后的提示是友好的中文（给用户看的）。"""
+        import openai
+        from agent.llm_client import _classify_openai_error
+        err = self._make_status_error(openai.AuthenticationError, 401)
+        result = _classify_openai_error(err)
+
+        # 提示应该是中文，且指引用户去检查设置
+        assert "interview.apiKey" in result.message
+
+    def _make_status_error(self, exc_cls, status_code):
+        """构造一个带 status_code 的 openai 状态错误（绕过复杂的构造签名）。"""
+        import httpx
+        # openai 的状态错误需要 response 对象，用 mock 构造
+        request = httpx.Request("POST", "https://api.test.com/chat")
+        response = httpx.Response(
+            status_code,
+            request=request,
+            content=b'{"error":{"message":"test"}}',
+        )
+        return exc_cls("test error", response=response, body=None)
+
+
+class TestLLMErrorDataclass:
+    """LLMError 作为 dataclass + Exception 的行为。"""
+
+    def test_is_exception(self):
+        """LLMError 是 Exception 子类（能被 except 捕获）。"""
+        from agent.llm_client import LLMError
+        assert issubclass(LLMError, Exception)
+
+    def test_carries_kind_and_message(self):
+        """携带 kind 和 message 字段。"""
+        from agent.llm_client import ERROR_KIND_AUTH, LLMError
+        err = LLMError(ERROR_KIND_AUTH, "key 无效")
+        assert err.kind == ERROR_KIND_AUTH
+        assert err.message == "key 无效"
+
+    def test_str_returns_message(self):
+        """str(error) 返回 message（方便日志）。"""
+        from agent.llm_client import ERROR_KIND_AUTH, LLMError
+        err = LLMError(ERROR_KIND_AUTH, "key 无效")
+        assert str(err) == "key 无效"
+
+
+# ──────────────────────────────────────────────
+# 自动重试测试（设计第 6.4.2 节延伸，Phase 7-B）
+# ──────────────────────────────────────────────
+
+
+class TestAutoRetry:
+    """验证 OpenAIClient 的自动重试逻辑（用 mock client，不真调 API）。"""
+
+    def _make_client_with_mock(self, side_effects, monkeypatch):
+        """构造一个 OpenAIClient，但把内部 _client 替换成 mock。
+
+        side_effects: 每次调 create 时依次抛出/返回的值。
+        sleep 时间缩到 0，让测试不真等。
+        """
+        from agent.llm_client import OpenAIClient
+
+        client = OpenAIClient.__new__(OpenAIClient)  # 跳过 __init__（不真连）
+        client._model = "test-model"
+
+        class MockCreate:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, **kwargs):
+                idx = self.calls
+                self.calls += 1
+                val = side_effects[idx]
+                if isinstance(val, Exception):
+                    raise val
+                return val
+
+        mock_create = MockCreate()
+
+        class MockCompletions:
+            def __init__(self):
+                self.create = mock_create
+
+        class MockChat:
+            def __init__(self):
+                self.completions = MockCompletions()
+
+        class MockClient:
+            def __init__(self):
+                self.chat = MockChat()
+
+        client._client = MockClient()
+
+        # time.sleep 已是 llm_client 模块级（顶部 import time），
+        # 直接 patch 模块的 time.sleep，避免测试真等 1+2+4 秒
+        monkeypatch.setattr("agent.llm_client.time.sleep", lambda s: None)
+
+        return client, mock_create
+
+    def test_retries_on_rate_limit_then_succeeds(self, monkeypatch):
+        """★ 前 2 次 429，第 3 次成功 → 应该重试并返回结果。"""
+        import httpx
+        import openai
+        from agent.llm_client import LLMError
+
+        # 构造 fake response
+        class FakeMsg:
+            content = "成功"
+            tool_calls = None
+
+        class FakeChoice:
+            message = FakeMsg()
+
+        class FakeResponse:
+            choices = [FakeChoice()]
+
+        ok = FakeResponse()
+        err = self._make_rate_limit_error()
+        client, mock_create = self._make_client_with_mock(
+            [err, err, ok], monkeypatch,
+        )
+
+        # 应该重试 2 次后成功
+        result = client.chat([], [])
+        assert result.content == "成功"
+        assert mock_create.calls == 3  # 调了 3 次
+
+    def test_no_retry_on_auth_error(self, monkeypatch):
+        """★ 401 不重试：立刻抛 LLMError（重试也是 401）。"""
+        from agent.llm_client import LLMError
+        err = self._make_auth_error()
+        client, mock_create = self._make_client_with_mock([err], monkeypatch)
+
+        with pytest.raises(LLMError) as exc_info:
+            client.chat([], [])
+
+        assert "auth" in exc_info.value.kind or exc_info.value.kind == "auth"
+        assert mock_create.calls == 1  # 只调了 1 次，没重试
+
+    def test_retries_exhausted_raises_after_max_attempts(self, monkeypatch):
+        """重试用尽（3 次都 429）→ 抛最后的 LLMError，不再 sleep。"""
+        err = self._make_rate_limit_error()
+        client, mock_create = self._make_client_with_mock(
+            [err, err, err], monkeypatch,
+        )
+
+        from agent.llm_client import LLMError
+        with pytest.raises(LLMError):
+            client.chat([], [])
+        assert mock_create.calls == 3  # 正好 3 次
+
+    def test_retries_on_connection_error(self, monkeypatch):
+        """断网（APIConnectionError）→ 可恢复，应该重试。"""
+        import openai
+        class FakeMsg:
+            content = "通了"
+            tool_calls = None
+        class FakeChoice:
+            message = FakeMsg()
+        class FakeResponse:
+            choices = [FakeChoice()]
+
+        conn_err = openai.APIConnectionError(request=None)
+        client, mock_create = self._make_client_with_mock(
+            [conn_err, FakeResponse()], monkeypatch,
+        )
+        result = client.chat([], [])
+        assert result.content == "通了"
+        assert mock_create.calls == 2
+
+    def test_non_openai_error_not_retried(self, monkeypatch):
+        """非 openai 异常（如程序 bug 的 ValueError）不重试，直接抛。"""
+        client, mock_create = self._make_client_with_mock(
+            [ValueError("bug")], monkeypatch,
+        )
+        with pytest.raises(ValueError):
+            client.chat([], [])
+        assert mock_create.calls == 1
+
+    def _make_rate_limit_error(self):
+        """构造一个 RateLimitError（429）。"""
+        import openai
+        import httpx
+        request = httpx.Request("POST", "https://api.test.com/chat")
+        response = httpx.Response(
+            429, request=request,
+            content=b'{"error":{"message":"rate limited"}}',
+        )
+        return openai.RateLimitError("rate limited", response=response, body=None)
+
+    def _make_auth_error(self):
+        """构造一个 AuthenticationError（401）。"""
+        import openai
+        import httpx
+        request = httpx.Request("POST", "https://api.test.com/chat")
+        response = httpx.Response(
+            401, request=request,
+            content=b'{"error":{"message":"bad key"}}',
+        )
+        return openai.AuthenticationError("bad key", response=response, body=None)
