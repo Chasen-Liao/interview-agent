@@ -88,9 +88,10 @@ class SearchCodeTool:
             "function": {
                 "name": "search_code",
                 "description": (
-                    "在整个项目里搜索包含某关键字的代码行，"
+                    "在项目里搜索包含某关键字的代码，了解项目用了哪些技术/库/框架。"
+                    "适合搜技术名（如 'flask'、'redis'、'threading'）来摸清技术栈，"
+                    "不是用于核对某段具体实现写得好不好。"
                     "返回文件路径、行号和匹配的那一行。"
-                    "用来验证学生提到的技术是否真的出现在代码里。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -155,8 +156,9 @@ class ReadFileTool:
             "function": {
                 "name": "read_file",
                 "description": (
-                    "读取项目里某个文件的完整内容。"
-                    "优先用于读取源代码文件。超大文件会被截断。"
+                    "读取项目里某个文件的内容，用于了解关键模块的大致实现思路。"
+                    "不必逐行细究，重点是搞清楚这个模块用了什么技术、怎么组织的。"
+                    "超大文件会被截断。"
                 ),
                 "parameters": {
                     "type": "object",
