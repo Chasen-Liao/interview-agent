@@ -74,6 +74,7 @@ function buildPanelOptions(context: ExtensionContext): PanelOptions {
       .getConfiguration("python")
       .get<string>("defaultInterpreterPath", ""),
     scriptPath: path.join(agentRoot, "agent", "main.py"),
+    requirementsPath: path.join(agentRoot, "requirements-agent.txt"),
     workspace: intervieweeProject?.uri.fsPath ?? "",
     workspaceName: intervieweeProject?.name ?? "",
     hasWorkspace: Boolean(intervieweeProject),

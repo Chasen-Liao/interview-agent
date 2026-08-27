@@ -64,6 +64,12 @@ class TestConfigure:
         store.configure(workspace=str(tmp_path), api_key="sk-x")
         assert store.workspace == str(tmp_path)
 
+    def test_sessions_dir_follows_workspace(self, tmp_path):
+        """历史会话落盘目录跟随目标工作区。"""
+        store = SessionStore()
+        store.configure(workspace=str(tmp_path), api_key="sk-x")
+        assert store._sessions_dir == str(tmp_path / ".sessions")  # noqa: SLF001
+
     def test_missing_api_key_not_configured(self, tmp_path):
         """只有 workspace 没有 key，不算就绪。"""
         store = SessionStore()

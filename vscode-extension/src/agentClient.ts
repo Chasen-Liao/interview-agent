@@ -92,10 +92,18 @@ export class AgentClient {
       ? `${this.options.pythonPathRoot}${PATH_DELIMITER}${existing}`
       : this.options.pythonPathRoot;
 
+    // 强制 Python 子进程全部 stdio 用 UTF-8：中文 Windows 上管道默认 GBK，
+    // 会把 Node 写入的 UTF-8 中文解码成乱码（历史会话标题乱码的根因）。
+    // main.py 里也有 reconfigure 兜底，双保险。
+    env.PYTHONIOENCODING = "utf-8";
+
     // 演示模式：让 Python 内核用 FakeLLM（零费用，不调真实 API）
     if (this.options.demoMode) {
       env.INTERVIEW_FAKE_LLM = "1";
       this.log("[demo] 演示模式：使用 FakeLLM，不调用真实 API");
+    } else {
+      delete env.INTERVIEW_FAKE_LLM;
+      this.log("[llm] 真实模式：调用配置的 OpenAI 兼容模型");
     }
 
     // -u：无缓冲，确保流式通知实时推出（设计第 1.6 节缓冲区陷阱）

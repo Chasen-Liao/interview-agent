@@ -15,12 +15,16 @@
 
 import sys
 
-# Windows 默认 stdout/stderr 用系统编码（GBK/cp936），会导致中文输出
+# Windows 默认 stdout/stderr/stdin 用系统编码（GBK/cp936），会导致中文输出
 # 在某些字符上抛 UnicodeEncodeError。强制改为 UTF-8，与协议约定一致
 # （设计第 1.6 节：stdio 用 UTF-8 JSON）。
+# stdin 尤其关键：Node 侧写入的是 UTF-8，若按 GBK 解码，用户输入的中文
+# 会变成乱码进入对话历史并落盘（历史会话标题乱码的根因）。
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
 import agent.protocol as protocol
 from agent.llm_client import AgentCancelled

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interview Agent UI Harness</title>
+  <link rel="stylesheet" href="../vscode-extension/media/styles.css" />
+  <style>
+    /* 仅模拟 VS Code 主题变量（深色），让样式正常解析 */
+    :root {
+      --vscode-font-family: system-ui, sans-serif;
+      --vscode-font-size: 13px;
+      --vscode-foreground: #cccccc;
+      --vscode-descriptionForeground: #9d9d9d;
+      --vscode-sideBar-background: #181818;
+      --vscode-editor-background: #1e1e1e;
+      --vscode-input-background: #2a2a2a;
+      --vscode-input-foreground: #cccccc;
+      --vscode-input-placeholderForeground: #6f6f6f;
+      --vscode-input-border: #3c3c3c;
+      --vscode-focusBorder: #0078d4;
+      --vscode-button-background: #0e639c;
+      --vscode-button-foreground: #ffffff;
+      --vscode-button-hoverBackground: #1177bb;
+      --vscode-button-secondaryBackground: #3a3d41;
+      --vscode-button-secondaryForeground: #ffffff;
+      --vscode-button-secondaryHoverBackground: #45494e;
+      --vscode-sideBarSectionHeader-border: #2b2b2b;
+      --vscode-panel-border: #2b2b2b;
+      --vscode-editorWidget-background: #202020;
+      --vscode-widget-border: #2b2b2b;
+      --vscode-icon-foreground: #c5c5c5;
+      --vscode-toolbar-hoverBackground: #2a2d2e;
+      --vscode-textCodeBlock-background: #1a1a1a;
+      --vscode-textLink-foreground: #4daafc;
+      --vscode-errorForeground: #f48771;
+      --vscode-list-hoverBackground: #2a2d2e;
+      --vscode-editor-font-family: Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="topbar__brand">
+        <span class="topbar__logo" aria-hidden="true">IA</span>
+        <span class="topbar__text">
+          <span class="topbar__title">Interview Agent</span>
+          <span class="topbar__subtitle">AI 技术面试官</span>
+        </span>
+      </div>
+      <div class="topbar__actions">
+        <button id="historyToggle" class="icon-button" title="历史会话" aria-label="历史会话">☰</button>
+        <button id="settings" class="icon-button" title="打开设置" aria-label="打开设置">⚙</button>
+      </div>
+    </header>
+
+    <section id="historyPanel" class="history is-collapsed">
+      <div class="history__header">
+        <div class="field__label">历史会话</div>
+        <div class="history__actions">
+          <button id="newSession" class="secondary-button" type="button">新建</button>
+          <button id="refreshSessions" class="secondary-button" type="button">刷新</button>
+        </div>
+      </div>
+      <div id="sessionList" class="session-list"></div>
+    </section>
+
+    <section id="setup" class="setup">
+      <div class="card">
+        <div class="card__header">
+          <span class="card__step">1</span>
+          <span class="card__title">岗位 JD</span>
+          <span class="card__hint">粘贴目标岗位的职位描述</span>
+        </div>
+        <textarea id="jd" class="field__textarea" rows="5" placeholder="粘贴岗位 JD，面试官将围绕 JD 要求与你的项目技术栈提问"></textarea>
+      </div>
+
+      <div class="card">
+        <div class="card__header">
+          <span class="card__step">2</span>
+          <span class="card__title">简历</span>
+          <span class="card__hint">上传附件或补充说明</span>
+        </div>
+        <button id="pickResume" class="resume-upload" type="button">
+          <span class="resume-upload__icon">＋</span>
+          <span class="resume-upload__body">
+            <span class="resume-upload__title">上传简历附件</span>
+            <span id="resumeFile" class="resume-upload__meta">支持 .pdf / .docx / .txt / .md</span>
+          </span>
+        </button>
+        <textarea id="resumeSupplement" class="field__textarea" rows="4" placeholder="可选：补充求职方向、项目亮点、在招公司等"></textarea>
+      </div>
+
+      <div class="card">
+        <div class="card__header">
+          <span class="card__step">3</span>
+          <span class="card__title">当前项目</span>
+          <span class="card__hint">面试中自动读取</span>
+        </div>
+        <div id="workspaceInfo" class="workspace-info__value">自动读取当前 VS Code 工作区</div>
+      </div>
+
+      <div id="configStatus" class="status"></div>
+      <div id="dependencyPanel" class="dependency is-hidden">
+        <div id="dependencyMessage" class="dependency__message"></div>
+        <code id="dependencyCommand" class="dependency__command"></code>
+        <div class="dependency__actions">
+          <button id="installDependencies" class="secondary-button" type="button">安装 Agent 依赖</button>
+          <button id="checkDependencies" class="secondary-button" type="button">重新检测</button>
+        </div>
+      </div>
+
+      <button id="startInterview" class="primary-button">开始面试</button>
+    </section>
+
+    <section class="chat">
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <textarea id="input" class="composer__input" rows="3" placeholder="输入回答，Enter 发送 · Shift+Enter 换行"></textarea>
+        <button id="action" class="composer__action" title="发送" aria-label="发送">↑</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // 桩掉 VS Code API，捕获 webview → host 消息
+    window.__posted = [];
+    window.acquireVsCodeApi = function () {
+      return {
+        postMessage: (m) => window.__posted.push(m),
+        getState: () => ({}),
+        setState: () => {},
+      };
+    };
+  </script>
+  <script src="../vscode-extension/media/main.js"></script>
+  <script>
+    // 测试入口：注入模拟数据
+    window.__inject = {
+      sessions(list, current) {
+        window.dispatchEvent(new MessageEvent("message", {
+          data: { type: "sessions", sessions: list, current },
+        }));
+      },
+      config() {
+        window.dispatchEvent(new MessageEvent("message", {
+          data: {
+            type: "config",
+            config: {
+              model: "glm-5.2", baseUrl: "", demoMode: false, hasApiKey: true,
+              workspaceName: "interview-agent", workspacePath: "D:\\project\\interview-agent",
+              hasWorkspace: true,
+            },
+          },
+        }));
+      },
+      stream(delta) {
+        window.dispatchEvent(new MessageEvent("message", {
+          data: { method: "stream", params: { session: "s1", delta } },
+        }));
+      },
+      toolCall(phase) {
+        window.dispatchEvent(new MessageEvent("message", {
+          data: {
+            method: "tool_call",
+            params: phase === "start"
+              ? { session: "s1", tool: "search_code", phase: "start", args: { keyword: "redis" } }
+              : { session: "s1", tool: "search_code", phase: "end", result: "找到 3 处匹配" },
+          },
+        }));
+      },
+      done() {
+        window.dispatchEvent(new MessageEvent("message", {
+          data: { method: "done", params: { session: "s1" } },
+        }));
+      },
+    };
+
+    // 自动注入场景：默认打开历史面板 + 一条 markdown 消息
+    window.__runScenario = function () {
+      window.__inject.config();
+      // 展开历史会话面板
+      document.getElementById("historyToggle").click();
+      window.__inject.sessions([
+        {
+          id: "vscode-1787800000000",
+          title: "我们开始一场技术面试，岗位是资深后端工程师，主要负责高并发系统设计",
+          preview: "面试官：你提到用了 Redis 做缓存，那过期策略和缓存穿透怎么处理？",
+          updatedAt: Date.now() - 3600_000,
+          messageCount: 12,
+        },
+        {
+          id: "vscode-1787700000000",
+          title: "前端 React 面试",
+          preview: "我们聊聊 React Fiber 架构吧。",
+          updatedAt: Date.now() - 86_400_000,
+          messageCount: 8,
+        },
+      ], "");
+      // 一条 markdown 输出
+      window.__inject.stream("## 追问：缓存一致性\n\n你提到用 **Redis** 做缓存，那：\n\n- 缓存过期策略怎么配的？\n- `cache aside` 模式下先删缓存还是先写库？\n\n> 提示：想想并发场景。\n\n```python\nredis.set(\"k\", \"v\", ex=60)\n```");
+      window.__inject.done();
+    };
+    window.addEventListener("load", () => setTimeout(window.__runScenario, 50));
+  </script>
+</body>
+</html>

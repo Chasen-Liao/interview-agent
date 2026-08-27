@@ -10,55 +10,46 @@
 <body>
   <div id="app">
     <header class="topbar">
-      <div class="topbar__title">Interview Agent</div>
-      <button id="settings" class="icon-button" title="打开设置" aria-label="打开设置">⚙</button>
+      <div class="topbar__brand">
+        <span class="topbar__logo" aria-hidden="true">IA</span>
+        <span class="topbar__text">
+          <span class="topbar__title">Interview Agent</span>
+          <span class="topbar__subtitle">AI 技术面试官</span>
+        </span>
+      </div>
+      <div class="topbar__actions">
+        <button id="historyToggle" class="icon-button" title="历史会话" aria-label="历史会话">☰</button>
+        <button id="settings" class="icon-button" title="打开设置" aria-label="打开设置">⚙</button>
+      </div>
     </header>
 
-    <section class="config">
-      <label class="field">
-        <span class="field__label">Provider</span>
-        <select id="provider" class="field__control">
-          <option value="openai">OpenAI</option>
-          <option value="deepseek">DeepSeek</option>
-          <option value="qwen">通义千问</option>
-          <option value="zhipu">智谱</option>
-          <option value="custom">自定义</option>
-        </select>
-      </label>
-
-      <label class="field">
-        <span class="field__label">Model</span>
-        <input id="model" class="field__control" type="text" spellcheck="false" />
-      </label>
-
-      <label class="field">
-        <span class="field__label">Base URL</span>
-        <input id="baseUrl" class="field__control" type="text" spellcheck="false" />
-      </label>
-
-      <label class="field">
-        <span class="field__label">API Key</span>
-        <input id="apiKey" class="field__control" type="password" spellcheck="false" autocomplete="off" />
-      </label>
-
-      <div class="config__row">
-        <label class="toggle">
-          <input id="demoMode" type="checkbox" />
-          <span>Demo Mode</span>
-        </label>
-        <button id="saveConfig" class="secondary-button">保存</button>
+    <section id="historyPanel" class="history is-collapsed">
+      <div class="history__header">
+        <div class="field__label">历史会话</div>
+        <div class="history__actions">
+          <button id="newSession" class="secondary-button" type="button">新建</button>
+          <button id="refreshSessions" class="secondary-button" type="button">刷新</button>
+        </div>
       </div>
-      <div id="configStatus" class="status"></div>
+      <div id="sessionList" class="session-list"></div>
     </section>
 
     <section id="setup" class="setup">
-      <label class="field">
-        <span class="field__label">岗位 JD</span>
-        <textarea id="jd" class="field__textarea" rows="5"></textarea>
-      </label>
+      <div class="card">
+        <div class="card__header">
+          <span class="card__step">1</span>
+          <span class="card__title">岗位 JD</span>
+          <span class="card__hint">粘贴目标岗位的职位描述</span>
+        </div>
+        <textarea id="jd" class="field__textarea" rows="5" placeholder="粘贴岗位 JD，面试官将围绕 JD 要求与你的项目技术栈提问"></textarea>
+      </div>
 
-      <div class="field">
-        <span class="field__label">简历</span>
+      <div class="card">
+        <div class="card__header">
+          <span class="card__step">2</span>
+          <span class="card__title">简历</span>
+          <span class="card__hint">上传附件或补充说明</span>
+        </div>
         <button id="pickResume" class="resume-upload" type="button">
           <span class="resume-upload__icon">＋</span>
           <span class="resume-upload__body">
@@ -66,23 +57,38 @@
             <span id="resumeFile" class="resume-upload__meta">支持 .pdf / .docx / .txt / .md</span>
           </span>
         </button>
-        <textarea id="resumeSupplement" class="field__textarea" rows="4"></textarea>
+        <textarea id="resumeSupplement" class="field__textarea" rows="4" placeholder="可选：补充求职方向、项目亮点、在招公司等"></textarea>
       </div>
 
-      <div class="workspace-info">
-        <div class="field__label">当前项目</div>
+      <div class="card">
+        <div class="card__header">
+          <span class="card__step">3</span>
+          <span class="card__title">当前项目</span>
+          <span class="card__hint">面试中自动读取</span>
+        </div>
         <div id="workspaceInfo" class="workspace-info__value">自动读取当前 VS Code 工作区</div>
+      </div>
+
+      <div id="configStatus" class="status"></div>
+      <div id="dependencyPanel" class="dependency is-hidden">
+        <div id="dependencyMessage" class="dependency__message"></div>
+        <code id="dependencyCommand" class="dependency__command"></code>
+        <div class="dependency__actions">
+          <button id="installDependencies" class="secondary-button" type="button">安装 Agent 依赖</button>
+          <button id="checkDependencies" class="secondary-button" type="button">重新检测</button>
+        </div>
       </div>
 
       <button id="startInterview" class="primary-button">开始面试</button>
     </section>
 
-    <div id="messages" class="messages"></div>
-
-    <div class="composer">
-      <textarea id="input" class="composer__input" rows="3"></textarea>
-      <button id="action" class="composer__action" title="发送" aria-label="发送">↑</button>
-    </div>
+    <section class="chat">
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <textarea id="input" class="composer__input" rows="3" placeholder="输入回答，Enter 发送 · Shift+Enter 换行"></textarea>
+        <button id="action" class="composer__action" title="发送" aria-label="发送">↑</button>
+      </div>
+    </section>
   </div>
 
   <script nonce="${nonce}" src="${scriptUri}"></script>

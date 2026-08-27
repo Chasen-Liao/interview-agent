@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { spawn } from "child_process";
 import { extractLines } from "../src/agentClient";
@@ -39,6 +39,20 @@ main_mod.main()
 
 const pythonAvailable = existsSync(join(__repo_root, "agent", "main.py"));
 
+/**
+ * 还原 VS Code 扩展进程的真实环境：开发机 shell 里常带 PYTHONUTF8 /
+ * PYTHONIOENCODING / LANG（会让 Python 管道默认 UTF-8），但 VS Code 不继承它们。
+ * 剥掉之后，中文 Windows 上 Python 管道默认 GBK —— 历史会话乱码的复现条件。
+ */
+function stripPythonUtf8Vars(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const clean = { ...env };
+  delete clean.PYTHONUTF8;
+  delete clean.PYTHONIOENCODING;
+  delete clean.LANG;
+  delete clean.LC_ALL;
+  return clean;
+}
+
 describe.skipIf(!pythonAvailable)(
   "跨语言端到端：TS AgentClient ↔ 真实 Python 内核",
   () => {
@@ -48,7 +62,10 @@ describe.skipIf(!pythonAvailable)(
       const proc = spawn(PYTHON, ["-c", PYTHON_WRAPPER], {
         cwd: __repo_root,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, PYTHONPATH: __repo_root },
+        env: {
+          ...stripPythonUtf8Vars(process.env),
+          PYTHONPATH: __repo_root,
+        },
       });
 
       await new Promise<void>((resolve, reject) => {
@@ -116,6 +133,17 @@ describe.skipIf(!pythonAvailable)(
       // stream 通知含中文回答（验证跨语言中文不丢失）
       const stream = notifications.find((n) => n.method === "stream");
       expect(stream?.params.delta).toContain("技术栈");
+
+      // 中文输入经 stdin → Python → 落盘往返后不乱码。
+      // 上面的 spawn 已剥掉 PYTHONUTF8 等变量：中文 Windows 上 Python 管道
+      // 默认 GBK，若 main.py 没把 stdin reconfigure 成 UTF-8，
+      // "看看我的项目" 会被解码成乱码写进 .sessions/*.json
+      //（历史会话标题乱码的根因）。本断言直接守护该修复。
+      const sessionFile = readFileSync(
+        join(__repo_root, ".sessions", "xlang-test.json"),
+        "utf-8",
+      );
+      expect(sessionFile).toContain("看看我的项目");
 
       proc.kill();
     }, 15000);

@@ -61,6 +61,7 @@ ERROR_KIND_RATE_LIMIT = "rate_limit"      # 429：请求太频繁 / 余额不足
 ERROR_KIND_AUTH = "auth"                  # 401：key 无效（不可恢复，重试无意义）
 ERROR_KIND_CONNECTION = "connection"      # 断网 / 超时 / DNS（临时，可重试）
 ERROR_KIND_SERVER = "server"              # 5xx：服务端临时故障（可重试）
+ERROR_KIND_BAD_REQUEST = "bad_request"    # 400：模型名/参数错误（不可恢复）
 ERROR_KIND_UNKNOWN = "unknown"
 
 
@@ -87,10 +88,11 @@ class AgentCancelled(Exception):
         self.partial = partial
 
 
-def _classify_openai_error(e: Exception) -> LLMError:
+def _classify_openai_error(e: Exception, model: str | None = None) -> LLMError:
     """把 openai 异常映射成 LLMError（设计第 6.4.2 节）。
 
     区分可恢复（rate_limit/connection/server，可重试）和不可恢复（auth，让用户改 key）。
+    model（可选）：当前配置的模型名，bad_request 时拼进提示，方便用户看出拼写错误。
     """
     # 延迟导入 openai 异常类：测试环境可能用注入的 mock，不强依赖 openai 装载
     import openai as _openai
@@ -115,6 +117,31 @@ def _classify_openai_error(e: Exception) -> LLMError:
         return LLMError(
             ERROR_KIND_SERVER,
             "服务端临时故障（5xx）。请稍后重试。",
+        )
+    if isinstance(e, _openai.APIStatusError) and e.status_code == 400:
+        text = str(e)
+        lowered = text.lower()
+        model_hint = f"「{model}」" if model else ""
+        if (
+            "modelcode" in lowered
+            or ("model" in lowered and (
+                "不存在" in text
+                or "not found" in lowered
+                or "not exist" in lowered
+                or "does not exist" in lowered
+                or "invalid model" in lowered
+            ))
+        ):
+            return LLMError(
+                ERROR_KIND_BAD_REQUEST,
+                f"模型配置错误：模型{model_hint}在当前 Base URL 对应的服务中不存在。"
+                "请检查 interview.model 是否拼写正确、与 interview.baseUrl 的服务商匹配"
+                "（常见笔误：glm-5,2 应为 glm-5.2）。",
+            )
+        return LLMError(
+            ERROR_KIND_BAD_REQUEST,
+            f"请求参数错误：模型服务拒绝了本次请求。"
+            f"请检查 interview.model{model_hint}与 interview.baseUrl 是否匹配。",
         )
     # 其他 openai 异常（APIError、APIStatusError 等）
     return LLMError(
@@ -347,7 +374,7 @@ class OpenAIClient:
             # 保留已生成的文本，追加错误标记，让用户知道生成被中断
             import openai as _openai
             if isinstance(e, _openai.APIError):
-                err = _classify_openai_error(e)
+                err = _classify_openai_error(e, model=self._model)
                 # 可恢复错误且已有内容：保留 + 标记中断
                 if accumulated_content and err.kind in (
                     ERROR_KIND_CONNECTION, ERROR_KIND_SERVER, ERROR_KIND_RATE_LIMIT,
@@ -419,10 +446,10 @@ class OpenAIClient:
                 if not isinstance(e, _openai.APIError):
                     raise
 
-                last_error = _classify_openai_error(e)
+                last_error = _classify_openai_error(e, model=self._model)
 
-                # 不可恢复错误（auth）：不重试
-                if last_error.kind == ERROR_KIND_AUTH:
+                # 不可恢复错误：重试不会改变结果
+                if last_error.kind in (ERROR_KIND_AUTH, ERROR_KIND_BAD_REQUEST):
                     raise last_error
 
                 # 可恢复错误：最后一次也直接抛（不再 sleep）

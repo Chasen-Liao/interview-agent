@@ -101,6 +101,7 @@ class SessionStore:
         self._model = model
         self._base_url = base_url
         self._resume = resume
+        self._sessions_dir = os.path.join(workspace, ".sessions")
         self._max_steps = max_steps
         self._max_history_tokens = max_history_tokens
         self._max_kept_full = max_kept_full

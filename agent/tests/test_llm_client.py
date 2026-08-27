@@ -289,7 +289,52 @@ class TestClassifyOpenAIError:
         # 提示应该是中文，且指引用户去检查设置
         assert "interview.apiKey" in result.message
 
-    def _make_status_error(self, exc_cls, status_code):
+    def test_bad_request_model_not_exist_carries_model_name(self):
+        """400 模型不存在 → bad_request 类，提示里带配置的模型名（笔误一眼可见）。"""
+        import openai
+
+        from agent.llm_client import ERROR_KIND_BAD_REQUEST, _classify_openai_error
+        # 复现智谱真实报错：modelCode 不存在（用户把 glm-5.2 误写成 glm-5,2）
+        err = self._make_status_error(
+            openai.BadRequestError,
+            400,
+            message="Error code: 400 - "
+                    "{'error': {'code': '1214', 'message': 'modelCode：不存在'}}",
+        )
+        result = _classify_openai_error(err, model="glm-5,2")
+
+        assert result.kind == ERROR_KIND_BAD_REQUEST
+        assert "glm-5,2" in result.message
+        assert "interview.model" in result.message
+
+    def test_bad_request_model_not_exist_without_model_context(self):
+        """不传 model 也能分类出 bad_request（向后兼容旧调用）。"""
+        import openai
+
+        from agent.llm_client import ERROR_KIND_BAD_REQUEST, _classify_openai_error
+        err = self._make_status_error(
+            openai.BadRequestError,
+            400,
+            message="Error code: 400 - model not found",
+        )
+        result = _classify_openai_error(err)
+
+        assert result.kind == ERROR_KIND_BAD_REQUEST
+        assert "interview.model" in result.message
+
+    def test_bad_request_other_400_classified(self):
+        """其他 400（非模型名问题）→ 也归 bad_request 类（不可恢复，不重试）。"""
+        import openai
+
+        from agent.llm_client import ERROR_KIND_BAD_REQUEST, _classify_openai_error
+        err = self._make_status_error(
+            openai.BadRequestError, 400, message="invalid parameter",
+        )
+        result = _classify_openai_error(err, model="glm-5.2")
+
+        assert result.kind == ERROR_KIND_BAD_REQUEST
+
+    def _make_status_error(self, exc_cls, status_code, message="test error"):
         """构造一个带 status_code 的 openai 状态错误（绕过复杂的构造签名）。"""
         import httpx
         # openai 的状态错误需要 response 对象，用 mock 构造
@@ -299,7 +344,7 @@ class TestClassifyOpenAIError:
             request=request,
             content=b'{"error":{"message":"test"}}',
         )
-        return exc_cls("test error", response=response, body=None)
+        return exc_cls(message, response=response, body=None)
 
 
 class TestLLMErrorDataclass:
@@ -478,6 +523,20 @@ class TestAutoRetry:
             client.chat([], [])
         assert mock_create.calls == 1
 
+    def test_no_retry_on_bad_request_model_not_exist(self, monkeypatch):
+        """★ 400 模型不存在不重试：立刻抛 LLMError，且提示带模型名。"""
+        from agent.llm_client import ERROR_KIND_BAD_REQUEST, LLMError
+        err = self._make_bad_request_model_error()
+        client, mock_create = self._make_client_with_mock([err], monkeypatch)
+        client._model = "glm-5,2"
+
+        with pytest.raises(LLMError) as exc_info:
+            client.chat([], [])
+
+        assert exc_info.value.kind == ERROR_KIND_BAD_REQUEST
+        assert "glm-5,2" in exc_info.value.message
+        assert mock_create.calls == 1  # 只调了 1 次，没重试
+
     def _make_rate_limit_error(self):
         """构造一个 RateLimitError（429）。"""
         import httpx
@@ -499,6 +558,22 @@ class TestAutoRetry:
             content=b'{"error":{"message":"bad key"}}',
         )
         return openai.AuthenticationError("bad key", response=response, body=None)
+
+    def _make_bad_request_model_error(self):
+        """构造一个 BadRequestError（400，模型不存在，复现智谱真实报错）。"""
+        import httpx
+        import openai
+        request = httpx.Request("POST", "https://api.test.com/chat")
+        response = httpx.Response(
+            400, request=request,
+            content=b'{"error":{"code":"1214","message":"modelCode"}}',
+        )
+        return openai.BadRequestError(
+            "Error code: 400 - "
+            "{'error': {'code': '1214', 'message': 'modelCode：不存在'}}",
+            response=response,
+            body=None,
+        )
 
 
 # ──────────────────────────────────────────────

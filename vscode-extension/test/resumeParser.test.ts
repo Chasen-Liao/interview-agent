@@ -11,7 +11,7 @@ vi.mock("vscode", () => ({
   window: {},
 }));
 
-import { parseResumeFile } from "../src/webviewPanel";
+import { buildInstallCommand, parseResumeFile } from "../src/webviewPanel";
 
 let tempRoot = "";
 
@@ -105,5 +105,33 @@ describe("parseResumeFile", () => {
     const result = await parseResumeFile(file);
 
     expect(result.content).toContain("Because traces are in SSA form");
+  });
+
+  it("PDF 文字层为空时触发 OCR fallback", async () => {
+    const file = tempFile("resume.pdf", "%PDF-1.4\n");
+    const statuses: string[] = [];
+
+    const result = await parseResumeFile(file, {
+      onStatus: (message) => statuses.push(message),
+      ocr: async () => "OCR Redis MySQL",
+      pdfText: async () => "",
+    });
+
+    expect(result.content).toBe("OCR Redis MySQL");
+    expect(statuses).toContain("正在识别扫描版 PDF...");
+  });
+
+  it("生成 Windows Terminal 依赖安装命令", () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const command = buildInstallCommand("C:\\Python\\python.exe", "D:\\a b\\requirements-agent.txt");
+      expect(command).toContain("& \"C:\\Python\\python.exe\" -m pip install -r");
+      expect(command).toContain("\"D:\\a b\\requirements-agent.txt\"");
+    } finally {
+      if (original) {
+        Object.defineProperty(process, "platform", original);
+      }
+    }
   });
 });
