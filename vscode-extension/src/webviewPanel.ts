@@ -9,6 +9,7 @@
 
 import { randomBytes } from "crypto";
 import { readFileSync } from "fs";
+import { basename, extname } from "path";
 import {
   CancellationToken,
   OutputChannel,
@@ -38,6 +39,8 @@ export interface PanelOptions {
   scriptPath: string;
   /** 被面试的项目根（工具翻代码的根）。 */
   workspace: string;
+  workspaceName: string;
+  hasWorkspace: boolean;
   /** agent 包所在根（PYTHONPATH 用），通常 = bundled-agent 根。 */
   pythonPathRoot: string;
   apiKey: string;
@@ -57,6 +60,9 @@ export interface WebviewConfigSnapshot {
   baseUrl: string;
   demoMode: boolean;
   hasApiKey: boolean;
+  workspaceName: string;
+  workspacePath: string;
+  hasWorkspace: boolean;
 }
 
 /** Webview 发来的配置变更。 */
@@ -71,6 +77,7 @@ type WebviewToHostMessage =
   | { type: "ready" }
   | { type: "chat"; text: string }
   | { type: "stop" }
+  | { type: "pickResume" }
   | { type: "openSettings" }
   | { type: "updateConfig"; config: WebviewConfigUpdate };
 
@@ -148,6 +155,10 @@ export class InterviewViewProvider implements WebviewViewProvider {
         this.agent?.send(buildStop(this.sessionId));
         return;
       }
+      if (msg.type === "pickResume") {
+        void this.pickResume(webview);
+        return;
+      }
       if (msg.type === "openSettings") {
         void commands.executeCommand("workbench.action.openSettings", "interview");
         return;
@@ -156,6 +167,52 @@ export class InterviewViewProvider implements WebviewViewProvider {
         void this.handleConfigUpdate(webview, msg.config);
       }
     });
+  }
+
+  /** 通过 VS Code 文件选择器读取文本简历附件。 */
+  private async pickResume(webview: Webview): Promise<void> {
+    const selected = await window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      filters: {
+        "文本简历": ["txt", "md", "markdown"],
+      },
+      title: "选择简历文件",
+    });
+    const file = selected?.[0];
+    if (!file) {
+      return;
+    }
+
+    const ext = extname(file.fsPath).toLowerCase();
+    if (![".txt", ".md", ".markdown"].includes(ext)) {
+      void webview.postMessage({
+        type: "resumeError",
+        message: "当前只支持 .txt、.md、.markdown 简历，请先转换为文本或粘贴到补充说明。",
+      });
+      return;
+    }
+
+    try {
+      const raw = readFileSync(file.fsPath, "utf-8");
+      const maxChars = 80_000;
+      const content = raw.length > maxChars ? raw.slice(0, maxChars) : raw;
+      void webview.postMessage({
+        type: "resumePicked",
+        resume: {
+          fileName: basename(file.fsPath),
+          content,
+          truncated: raw.length > maxChars,
+        },
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      void webview.postMessage({
+        type: "resumeError",
+        message: `读取简历失败：${message}`,
+      });
+    }
   }
 
   /** 读当前编辑器选中的代码，作为下一轮面试追问的上下文。 */
@@ -206,6 +263,17 @@ export class InterviewViewProvider implements WebviewViewProvider {
     }
 
     const options = this.buildOptions();
+    if (!options.hasWorkspace || !options.workspace) {
+      void webview.postMessage({
+        method: "error",
+        params: {
+          session: this.sessionId,
+          message: "请先打开要面试的目标项目文件夹，再开始面试。",
+        },
+      });
+      return false;
+    }
+
     if (!options.demoMode && !options.apiKey) {
       void webview.postMessage({
         method: "error",
@@ -274,6 +342,9 @@ export class InterviewViewProvider implements WebviewViewProvider {
       baseUrl: options.baseUrl ?? "",
       demoMode: Boolean(options.demoMode),
       hasApiKey: Boolean(options.apiKey),
+      workspaceName: options.workspaceName,
+      workspacePath: options.workspace,
+      hasWorkspace: options.hasWorkspace,
     };
     void webview.postMessage({ type: "config", config });
   }

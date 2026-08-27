@@ -57,10 +57,22 @@
         <textarea id="jd" class="field__textarea" rows="5"></textarea>
       </label>
 
-      <label class="field">
-        <span class="field__label">简历 / 项目背景</span>
-        <textarea id="background" class="field__textarea" rows="4"></textarea>
-      </label>
+      <div class="field">
+        <span class="field__label">简历</span>
+        <button id="pickResume" class="resume-upload" type="button">
+          <span class="resume-upload__icon">＋</span>
+          <span class="resume-upload__body">
+            <span class="resume-upload__title">上传简历附件</span>
+            <span id="resumeFile" class="resume-upload__meta">支持 .txt / .md / .markdown</span>
+          </span>
+        </button>
+        <textarea id="resumeSupplement" class="field__textarea" rows="4"></textarea>
+      </div>
+
+      <div class="workspace-info">
+        <div class="field__label">当前项目</div>
+        <div id="workspaceInfo" class="workspace-info__value">自动读取当前 VS Code 工作区</div>
+      </div>
 
       <button id="startInterview" class="primary-button">开始面试</button>
     </section>
@@ -69,8 +81,7 @@
 
     <div class="composer">
       <textarea id="input" class="composer__input" rows="3"></textarea>
-      <button id="send" class="composer__send" title="发送" aria-label="发送">↑</button>
-      <button id="stop" class="composer__stop" title="停止" aria-label="停止" disabled>■</button>
+      <button id="action" class="composer__action" title="发送" aria-label="发送">↑</button>
     </div>
   </div>
 

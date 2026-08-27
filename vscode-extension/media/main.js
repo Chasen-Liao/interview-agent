@@ -18,8 +18,7 @@
 
   const messagesEl = document.getElementById("messages");
   const inputEl = document.getElementById("input");
-  const sendBtn = document.getElementById("send");
-  const stopBtn = document.getElementById("stop");
+  const actionBtn = document.getElementById("action");
   const providerEl = document.getElementById("provider");
   const modelEl = document.getElementById("model");
   const baseUrlEl = document.getElementById("baseUrl");
@@ -29,7 +28,10 @@
   const settingsBtn = document.getElementById("settings");
   const configStatusEl = document.getElementById("configStatus");
   const jdEl = document.getElementById("jd");
-  const backgroundEl = document.getElementById("background");
+  const resumeSupplementEl = document.getElementById("resumeSupplement");
+  const pickResumeBtn = document.getElementById("pickResume");
+  const resumeFileEl = document.getElementById("resumeFile");
+  const workspaceInfoEl = document.getElementById("workspaceInfo");
   const startInterviewBtn = document.getElementById("startInterview");
   const setupEl = document.getElementById("setup");
 
@@ -37,11 +39,28 @@
   let awaiting = false;
   let pendingAfterConfig = null;
   let interviewStarted = false;
+  let resumeAttachment = null;
+  let workspaceState = { hasWorkspace: false, workspaceName: "", workspacePath: "" };
 
   function setAwaiting(value) {
     awaiting = value;
-    sendBtn.disabled = value;
-    stopBtn.disabled = !value;
+    updateActionButton();
+  }
+
+  function updateActionButton() {
+    if (awaiting) {
+      actionBtn.textContent = "■";
+      actionBtn.title = "停止";
+      actionBtn.setAttribute("aria-label", "停止");
+      actionBtn.disabled = false;
+      actionBtn.classList.add("is-stop");
+      return;
+    }
+    actionBtn.textContent = "↑";
+    actionBtn.title = "发送";
+    actionBtn.setAttribute("aria-label", "发送");
+    actionBtn.disabled = !inputEl.value.trim();
+    actionBtn.classList.remove("is-stop");
   }
 
   function collectConfig() {
@@ -69,21 +88,46 @@
       appendBubble("error", "出错了", "请先填写岗位 JD。");
       return;
     }
+    if (!workspaceState.hasWorkspace) {
+      appendBubble("error", "出错了", "请先打开要面试的目标项目文件夹。");
+      return;
+    }
 
-    const background = backgroundEl.value.trim();
+    const resumeSupplement = resumeSupplementEl.value.trim();
+    const resumeParts = [];
+    if (resumeAttachment) {
+      resumeParts.push(
+        `简历附件：${resumeAttachment.fileName}\n${resumeAttachment.content}`,
+      );
+    }
+    if (resumeSupplement) {
+      resumeParts.push(`简历补充：\n${resumeSupplement}`);
+    }
+
     const text = [
       "我们开始一场技术面试。",
       "",
       `岗位 JD：\n${jd}`,
-      background ? `\n简历 / 项目背景：\n${background}` : "",
-      "\n请基于岗位 JD 和当前 VS Code 工作区项目，先了解项目结构，再开始第一轮面试提问。",
+      resumeParts.length ? `\n简历：\n${resumeParts.join("\n\n")}` : "",
+      `\n当前项目：${workspaceState.workspaceName || "未命名工作区"}`,
+      `项目路径：${workspaceState.workspacePath}`,
+      "请自动读取当前 VS Code 工作区下的项目情况，先了解项目结构和技术栈，再开始第一轮面试提问。",
     ].join("\n");
 
     saveConfig(() => {
       interviewStarted = true;
       setupEl.classList.add("is-collapsed");
-      sendChat(text, "已提交岗位 JD 和项目背景，开始面试。");
+      sendChat(text, "已提交岗位 JD 和简历，开始面试。");
     });
+  }
+
+  function onAction() {
+    if (awaiting) {
+      vscode.postMessage({ type: "stop" });
+      setAwaiting(false);
+      return;
+    }
+    send();
   }
 
   function send() {
@@ -121,9 +165,21 @@
       }
       return;
     }
+    if (msg.type === "resumePicked") {
+      resumeAttachment = msg.resume;
+      resumeFileEl.textContent = msg.resume.truncated
+        ? `${msg.resume.fileName}（已截取前 80000 字）`
+        : msg.resume.fileName;
+      return;
+    }
+    if (msg.type === "resumeError") {
+      appendBubble("error", "出错了", msg.message || "读取简历失败");
+      return;
+    }
     if (msg.type === "prefill") {
       inputEl.value = msg.text || "";
       inputEl.focus();
+      updateActionButton();
       return;
     }
     if (typeof msg.method !== "string") {
@@ -152,6 +208,15 @@
     demoModeEl.checked = Boolean(config.demoMode);
     apiKeyEl.placeholder = config.hasApiKey ? "已配置" : "";
     providerEl.value = inferProvider(modelEl.value, baseUrlEl.value);
+    workspaceState = {
+      hasWorkspace: Boolean(config.hasWorkspace),
+      workspaceName: config.workspaceName || "",
+      workspacePath: config.workspacePath || "",
+    };
+    workspaceInfoEl.textContent = workspaceState.hasWorkspace
+      ? `自动读取：${workspaceState.workspaceName || workspaceState.workspacePath}`
+      : "未打开目标项目文件夹";
+    workspaceInfoEl.title = workspaceState.workspacePath || "";
   }
 
   function inferProvider(model, baseUrl) {
@@ -275,13 +340,13 @@
   settingsBtn.addEventListener("click", () => {
     vscode.postMessage({ type: "openSettings" });
   });
-  startInterviewBtn.addEventListener("click", startInterview);
-  sendBtn.addEventListener("click", send);
-  stopBtn.addEventListener("click", () => {
-    vscode.postMessage({ type: "stop" });
-    setAwaiting(false);
+  pickResumeBtn.addEventListener("click", () => {
+    vscode.postMessage({ type: "pickResume" });
   });
+  startInterviewBtn.addEventListener("click", startInterview);
+  actionBtn.addEventListener("click", onAction);
 
+  inputEl.addEventListener("input", updateActionButton);
   inputEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -290,6 +355,7 @@
   });
 
   vscode.postMessage({ type: "ready" });
+  updateActionButton();
   if (!interviewStarted) {
     jdEl.focus();
   }

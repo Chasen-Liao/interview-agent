@@ -66,13 +66,14 @@ function resolveAgentRoot(context: ExtensionContext): string {
 function buildPanelOptions(context: ExtensionContext): PanelOptions {
   const cfg = readConfig();
   const agentRoot = resolveAgentRoot(context);
-  const intervieweeProject =
-    workspace.workspaceFolders?.[0]?.uri.fsPath ?? agentRoot;
+  const intervieweeProject = workspace.workspaceFolders?.[0];
 
   return {
     pythonPath: cfg.pythonPath,
     scriptPath: path.join(agentRoot, "agent", "main.py"),
-    workspace: intervieweeProject,
+    workspace: intervieweeProject?.uri.fsPath ?? "",
+    workspaceName: intervieweeProject?.name ?? "",
+    hasWorkspace: Boolean(intervieweeProject),
     pythonPathRoot: agentRoot,
     apiKey: cfg.apiKey,
     model: cfg.model,

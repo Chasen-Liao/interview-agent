@@ -144,8 +144,7 @@ button:disabled {
 
 .primary-button,
 .secondary-button,
-.composer__send,
-.composer__stop {
+.composer__action {
   border: none;
   border-radius: 4px;
   color: var(--vscode-button-foreground);
@@ -164,12 +163,12 @@ button:disabled {
 }
 
 .primary-button:hover,
-.composer__send:hover {
+.composer__action:hover {
   background: var(--vscode-button-hoverBackground);
 }
 
 .secondary-button:hover,
-.composer__stop:hover {
+.composer__action.is-stop:hover {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
@@ -177,6 +176,80 @@ button:disabled {
   min-height: 16px;
   color: var(--vscode-descriptionForeground);
   font-size: 12px;
+}
+
+.workspace-info__value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resume-upload {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 54px;
+  padding: 9px;
+  color: var(--vscode-foreground);
+  text-align: left;
+  background: var(--vscode-input-background);
+  border: 1px dashed var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 4px;
+}
+
+.resume-upload:hover,
+.resume-upload:focus {
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
+.resume-upload__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border-radius: 4px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.resume-upload__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resume-upload__title {
+  font-weight: 600;
+}
+
+.resume-upload__meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-input-background);
 }
 
 .messages {
@@ -241,10 +314,7 @@ button:disabled {
 }
 
 .composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px 32px;
-  gap: 6px;
-  align-items: end;
+  position: relative;
   min-height: 100px;
   padding: 10px;
   border-top: 1px solid var(--vscode-sideBarSectionHeader-border);
@@ -253,11 +323,14 @@ button:disabled {
 .composer__input {
   height: 80px;
   min-height: 80px;
+  padding-right: 46px;
   overflow-y: auto;
 }
 
-.composer__send,
-.composer__stop {
+.composer__action {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -268,7 +341,7 @@ button:disabled {
   line-height: 1;
 }
 
-.composer__stop {
+.composer__action.is-stop {
   color: var(--vscode-button-secondaryForeground);
   background: var(--vscode-button-secondaryBackground);
 }
