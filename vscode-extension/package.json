@@ -2,7 +2,7 @@
   "name": "interview-agent",
   "displayName": "Interview Agent",
   "description": "会调工具的 AI 面试官——Agent 主动调用工具核对代码、给出基于真实代码的追问",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "daisy-hhy",
   "license": "MIT",
   "repository": {
@@ -119,7 +119,7 @@
     "compile": "tsc -p ./ && npm run copy-media",
     "copy-media": "node -e \"const fs=require('fs');fs.mkdirSync('media',{recursive:true});for(const f of ['styles.css','main.js','index.html'])fs.cpSync(`src/webview/${f}`,`media/${f}`)\"",
     "prepare-agent": "node scripts/prepare-agent.js",
-    "package": "vsce package --no-dependencies",
+    "package": "vsce package",
     "watch": "tsc -watch -p ./",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -130,5 +130,9 @@
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "mammoth": "^1.12.1",
+    "pdf-parse": "^1.1.1"
   }
 }

@@ -6,10 +6,16 @@
 
 import io
 import json
+import time
 
 import agent.main as main_mod
 import agent.protocol as protocol
-from agent.llm_client import FakeLLM, make_text_response, make_tool_call_response
+from agent.llm_client import (
+    AgentCancelled,
+    FakeLLM,
+    make_text_response,
+    make_tool_call_response,
+)
 from agent.session import SessionStore
 
 # ──────────────────────────────────────────────
@@ -182,9 +188,9 @@ class TestAttachedCode:
         fake = FakeLLM([make_text_response("ok")])
         original_chat = fake.chat
 
-        def spy_chat(messages, tools, on_delta=None):
+        def spy_chat(messages, tools, on_delta=None, should_cancel=None):
             captured.append(messages)
-            return original_chat(messages, tools)
+            return original_chat(messages, tools, on_delta=on_delta, should_cancel=should_cancel)
 
         fake.chat = spy_chat
 
@@ -212,9 +218,9 @@ class TestAttachedCode:
         fake = FakeLLM([make_text_response("ok")])
         original_chat = fake.chat
 
-        def spy_chat(messages, tools, on_delta=None):
+        def spy_chat(messages, tools, on_delta=None, should_cancel=None):
             captured.append(messages)
-            return original_chat(messages, tools)
+            return original_chat(messages, tools, on_delta=on_delta, should_cancel=should_cancel)
 
         fake.chat = spy_chat
 
@@ -251,11 +257,37 @@ class TestRobustness:
         )
         assert notifications == []
 
-    def test_stop_is_noop(self, tmp_path):
-        """stop 消息不崩（MVP 占位）。"""
+    def test_stop_when_idle_is_ignored(self, tmp_path):
+        """空闲时 stop 不报错。"""
         store, _ = make_configured_store(tmp_path)
         # 不该抛异常
         run_input([{"method": "stop", "params": {"session": "s1"}}], store)
+
+    def test_stop_cancels_running_chat(self, tmp_path):
+        """chat 运行中收到 stop，发 cancelled 而不是 done。"""
+        class SlowLLM:
+            def chat(self, messages, tools, on_delta=None, should_cancel=None):
+                if on_delta:
+                    on_delta("部分")
+                deadline = time.time() + 1
+                while time.time() < deadline:
+                    if should_cancel and should_cancel():
+                        raise AgentCancelled("部分")
+                    time.sleep(0.01)
+                raise AssertionError("stop 未生效")
+
+        store = SessionStore(llm_factory=lambda: SlowLLM())
+        store._sessions_dir = str(tmp_path / ".sessions")  # noqa: SLF001
+        store.configure(workspace=str(tmp_path), api_key="sk-test")
+
+        notifications = run_input([
+            {"method": "chat", "params": {"session": "s1", "text": "开始"}},
+            {"method": "stop", "params": {"session": "s1"}},
+        ], store)
+
+        methods = [n["method"] for n in notifications]
+        assert "cancelled" in methods
+        assert "done" not in methods
 
     def test_empty_input_exits_cleanly(self, tmp_path):
         """空输入正常退出。"""
@@ -272,7 +304,7 @@ class TestRobustness:
 
         monkeypatch.setitem(
             main_mod.__dict__, "_handle_chat",
-            lambda store, params: boom(params),
+            lambda store, params, should_cancel=None: boom(params),
         )
 
         # 重新设置 handlers 引用 —— main 里每次都重建 handlers dict，所以 monkeypatch 生效
@@ -319,10 +351,14 @@ class TestMultipleMessages:
         store._sessions_dir = str(tmp_path / ".sessions")  # noqa: SLF001
         store.configure(workspace=str(tmp_path), api_key="sk-test")
 
-        run_input([
-            {"method": "chat", "params": {"session": "s1", "text": "问1"}},
-            {"method": "chat", "params": {"session": "s1", "text": "问2"}},
-        ], store)
+        run_input(
+            [{"method": "chat", "params": {"session": "s1", "text": "问1"}}],
+            store,
+        )
+        run_input(
+            [{"method": "chat", "params": {"session": "s1", "text": "问2"}}],
+            store,
+        )
 
         loop = store.get_or_create("s1")
         # 两轮历史累积：system + user1 + asst1 + user2 + asst2

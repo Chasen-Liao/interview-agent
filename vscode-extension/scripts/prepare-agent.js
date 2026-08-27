@@ -26,4 +26,10 @@ fs.cpSync(source, target, {
   },
 });
 
+fs.writeFileSync(
+  path.join(extensionRoot, "bundled-agent", "requirements-agent.txt"),
+  "openai>=2.0\n",
+  "utf-8",
+);
+
 console.log(`Copied Agent runtime to ${target}`);

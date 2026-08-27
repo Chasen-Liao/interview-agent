@@ -13,9 +13,15 @@
 - 回调被正确触发
 """
 
+import pytest
 
 from agent.agent_loop import AgentLoop
-from agent.llm_client import FakeLLM, make_text_response, make_tool_call_response
+from agent.llm_client import (
+    AgentCancelled,
+    FakeLLM,
+    make_text_response,
+    make_tool_call_response,
+)
 from agent.tools.base import ToolRegistry
 
 # ──────────────────────────────────────────────
@@ -397,7 +403,7 @@ class TestStreamingPassthrough:
         class SpyLLM:
             def __init__(self):
                 self.received_delta = None
-            def chat(self, messages, tools, on_delta=None):
+            def chat(self, messages, tools, on_delta=None, should_cancel=None):
                 received_delta_kwargs.append(on_delta)
                 self.received_delta = on_delta
                 # 模拟伪流式：推一次文本
@@ -424,7 +430,7 @@ class TestStreamingPassthrough:
         class SpyLLM:
             def __init__(self):
                 self.received_delta = "unset"
-            def chat(self, messages, tools, on_delta="unset"):
+            def chat(self, messages, tools, on_delta="unset", should_cancel=None):
                 self.received_delta = on_delta
                 return LLMResponse(content="答")
 
@@ -465,3 +471,61 @@ class TestStreamingPassthrough:
         assert result == "流式最终回答"
         # 工具调用轮不推文本 delta；最终回答轮推一次（FakeLLM 伪流式）
         assert deltas == ["流式最终回答"]
+
+
+class TestCancellation:
+    def test_cancel_before_llm_call(self):
+        """取消事件已置位时，不发起 LLM 调用。"""
+        fake = FakeLLM([make_text_response("不会返回")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(),
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+        with pytest.raises(AgentCancelled):
+            loop.run("问", should_cancel=lambda: True)
+
+        assert fake.call_count == 0
+
+    def test_stream_cancel_preserves_partial_history(self):
+        """流式生成中取消：已生成部分进入历史，供后续上下文使用。"""
+        fake = FakeLLM([make_text_response("部分回答")])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(),
+            system_prompt=SYSTEM_PROMPT,
+        )
+        calls = 0
+
+        def should_cancel():
+            nonlocal calls
+            calls += 1
+            return calls >= 4
+
+        with pytest.raises(AgentCancelled) as exc_info:
+            loop.run("问", on_delta=lambda _: None, should_cancel=should_cancel)
+
+        assert exc_info.value.partial == "部分回答"
+        assert loop.messages[-1] == {"role": "assistant", "content": "部分回答"}
+
+    def test_cancel_before_tool_keeps_tool_history_valid(self):
+        """工具执行前取消时，补一条 tool 结果，避免后续历史格式失效。"""
+        fake = FakeLLM([make_tool_call_response("echo", {"text": "x"})])
+        loop = AgentLoop(
+            llm=fake,
+            tools=build_registry(EchoTool()),
+            system_prompt=SYSTEM_PROMPT,
+        )
+        calls = 0
+
+        def should_cancel():
+            nonlocal calls
+            calls += 1
+            return calls >= 4
+
+        with pytest.raises(AgentCancelled):
+            loop.run("问", should_cancel=should_cancel)
+
+        assert loop.messages[-1]["role"] == "tool"
+        assert "已停止" in loop.messages[-1]["content"]

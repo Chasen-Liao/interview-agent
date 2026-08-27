@@ -23,6 +23,7 @@ import {
 } from "vscode";
 import { AgentClient } from "./agentClient";
 import { buildChat, buildStop } from "./protocol";
+import { locatePython } from "./pythonLocator";
 
 /** 共享的调试输出通道（整个插件一个，所有 Python 日志都写这里）。 */
 let debugChannel: OutputChannel | null = null;
@@ -36,6 +37,7 @@ function getDebugChannel(): OutputChannel {
 /** 从配置构造 AgentClient 需要的参数。 */
 export interface PanelOptions {
   pythonPath: string;
+  vscodePythonPath?: string;
   scriptPath: string;
   /** 被面试的项目根（工具翻代码的根）。 */
   workspace: string;
@@ -80,6 +82,14 @@ type WebviewToHostMessage =
   | { type: "pickResume" }
   | { type: "openSettings" }
   | { type: "updateConfig"; config: WebviewConfigUpdate };
+
+export interface ResumeParseResult {
+  fileName: string;
+  content: string;
+  truncated: boolean;
+}
+
+const RESUME_MAX_CHARS = 80_000;
 
 export class InterviewViewProvider implements WebviewViewProvider {
   private view: WebviewView | undefined;
@@ -169,14 +179,14 @@ export class InterviewViewProvider implements WebviewViewProvider {
     });
   }
 
-  /** 通过 VS Code 文件选择器读取文本简历附件。 */
+  /** 通过 VS Code 文件选择器读取简历附件。 */
   private async pickResume(webview: Webview): Promise<void> {
     const selected = await window.showOpenDialog({
       canSelectFiles: true,
       canSelectFolders: false,
       canSelectMany: false,
       filters: {
-        "文本简历": ["txt", "md", "markdown"],
+        "简历文件": ["pdf", "docx", "txt", "md", "markdown"],
       },
       title: "选择简历文件",
     });
@@ -185,26 +195,11 @@ export class InterviewViewProvider implements WebviewViewProvider {
       return;
     }
 
-    const ext = extname(file.fsPath).toLowerCase();
-    if (![".txt", ".md", ".markdown"].includes(ext)) {
-      void webview.postMessage({
-        type: "resumeError",
-        message: "当前只支持 .txt、.md、.markdown 简历，请先转换为文本或粘贴到补充说明。",
-      });
-      return;
-    }
-
     try {
-      const raw = readFileSync(file.fsPath, "utf-8");
-      const maxChars = 80_000;
-      const content = raw.length > maxChars ? raw.slice(0, maxChars) : raw;
+      const resume = await parseResumeFile(file.fsPath);
       void webview.postMessage({
         type: "resumePicked",
-        resume: {
-          fileName: basename(file.fsPath),
-          content,
-          truncated: raw.length > maxChars,
-        },
+        resume,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -285,8 +280,30 @@ export class InterviewViewProvider implements WebviewViewProvider {
       return false;
     }
 
+    const pythonLookup = locatePython({
+      configuredPath: options.pythonPath,
+      workspacePath: options.workspace,
+      vscodePythonPath: options.vscodePythonPath,
+      requireOpenAI: !options.demoMode,
+    });
+
+    const logger = getDebugChannel();
+    for (const line of pythonLookup.diagnostics) {
+      logger.appendLine(line);
+    }
+    if (!options.demoMode && pythonLookup.error) {
+      void webview.postMessage({
+        method: "error",
+        params: {
+          session: this.sessionId,
+          message: pythonLookup.error,
+        },
+      });
+      return false;
+    }
+
     this.agent = new AgentClient({
-      pythonPath: options.pythonPath,
+      pythonPath: pythonLookup.pythonPath,
       scriptPath: options.scriptPath,
       workspace: options.workspace,
       pythonPathRoot: options.pythonPathRoot,
@@ -368,6 +385,42 @@ export class InterviewViewProvider implements WebviewViewProvider {
       .replaceAll("${stylesUri}", String(stylesUri))
       .replaceAll("${scriptUri}", String(scriptUri));
   }
+}
+
+/** 读取并解析简历附件，返回可注入首轮上下文的纯文本。 */
+export async function parseResumeFile(filePath: string): Promise<ResumeParseResult> {
+  const ext = extname(filePath).toLowerCase();
+  let raw = "";
+
+  if ([".txt", ".md", ".markdown"].includes(ext)) {
+    raw = readFileSync(filePath, "utf-8");
+  } else if (ext === ".docx") {
+    const mammoth = await import("mammoth");
+    const result = await mammoth.extractRawText({ path: filePath });
+    raw = result.value;
+  } else if (ext === ".pdf") {
+    const pdfParse = await importPdfParse();
+    const result = await pdfParse(readFileSync(filePath));
+    raw = result.text;
+  } else {
+    throw new Error("当前只支持 .pdf、.docx、.txt、.md、.markdown 简历。");
+  }
+
+  const normalized = raw.trim();
+  if (!normalized) {
+    throw new Error("未从简历附件中提取到文字内容。扫描版 PDF 请改用文本粘贴。");
+  }
+
+  return {
+    fileName: basename(filePath),
+    content: normalized.slice(0, RESUME_MAX_CHARS),
+    truncated: normalized.length > RESUME_MAX_CHARS,
+  };
+}
+
+async function importPdfParse(): Promise<(data: Buffer) => Promise<{ text: string }>> {
+  const mod = await import("pdf-parse/lib/pdf-parse.js");
+  return (mod.default ?? mod) as unknown as (data: Buffer) => Promise<{ text: string }>;
 }
 
 function getNonce(): string {

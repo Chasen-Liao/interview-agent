@@ -7,7 +7,7 @@
 from typing import Any, Callable
 
 from agent.history import compress_history, enforce_token_limit
-from agent.llm_client import LLMClient, LLMResponse
+from agent.llm_client import AgentCancelled, LLMClient, LLMResponse
 from agent.tools.base import ToolRegistry
 
 
@@ -30,6 +30,7 @@ def _sanitize_surrogates(text: str) -> str:
 # on_response: LLM 给出最终文本回答时通知（UI 流式输出）
 ToolCallCallback = Callable[[str, dict[str, Any], str, str], None]
 ResponseCallback = Callable[[str], None]
+CancelCallback = Callable[[], bool]
 
 
 class AgentLoop:
@@ -81,6 +82,7 @@ class AgentLoop:
         on_tool_call: ToolCallCallback | None = None,
         on_response: ResponseCallback | None = None,
         on_delta: Any = None,
+        should_cancel: CancelCallback | None = None,
     ) -> str:
         """跑一轮 Agent 循环。
 
@@ -96,6 +98,11 @@ class AgentLoop:
 
         返回：Agent 的最终文本回答
         """
+        def check_cancel(partial: str = "") -> None:
+            if should_cancel is not None and should_cancel():
+                raise AgentCancelled(partial)
+
+        check_cancel()
         # 把用户消息加入历史
         self._messages.append({"role": "user", "content": user_text})
 
@@ -103,6 +110,7 @@ class AgentLoop:
         tools_schema = self._tools.all_schemas()
 
         for step in range(self._max_steps):
+            check_cancel()
             # ── 每轮调 LLM 前：管理历史（设计第 6.2 节）──
             # 参数透传：None 时用 history 模块默认值（Phase 7-D 可配化）
             if self._max_kept_full is not None:
@@ -115,11 +123,21 @@ class AgentLoop:
                 self._messages = enforce_token_limit(self._messages)
 
             # ── 调 LLM（传 on_delta 启用流式，Phase 7-C）──
-            response = self._llm.chat(self._messages, tools_schema, on_delta=on_delta)
+            try:
+                response = self._llm.chat(
+                    self._messages,
+                    tools_schema,
+                    on_delta=on_delta,
+                    should_cancel=should_cancel,
+                )
+            except AgentCancelled as e:
+                if e.partial:
+                    self._messages.append({"role": "assistant", "content": e.partial})
+                raise
 
             if response.tool_calls:
                 # LLM 想调工具：处理所有工具调用，继续循环
-                self._handle_tool_calls(response, on_tool_call)
+                self._handle_tool_calls(response, on_tool_call, should_cancel)
                 # 不 return，继续下一轮——LLM 拿到工具结果会再想下一步
             else:
                 # LLM 直接回答了：输出文本，结束循环
@@ -142,6 +160,7 @@ class AgentLoop:
         self,
         response: LLMResponse,
         on_tool_call: ToolCallCallback | None,
+        should_cancel: CancelCallback | None = None,
     ) -> None:
         """处理 LLM 的所有工具调用，把结果塞回对话历史。
 
@@ -156,7 +175,7 @@ class AgentLoop:
 
         # 逐个执行工具
         import json
-        for tc in response.tool_calls:
+        for index, tc in enumerate(response.tool_calls):
             func = tc["function"]
             name = func["name"]
             # arguments 是 JSON 字符串（Phase 3 守护的格式）
@@ -168,6 +187,15 @@ class AgentLoop:
             # 通知外部：工具开始
             if on_tool_call:
                 on_tool_call(name, args, "start", "")
+
+            if should_cancel is not None and should_cancel():
+                for pending in response.tool_calls[index:]:
+                    self._messages.append({
+                        "role": "tool",
+                        "tool_call_id": pending["id"],
+                        "content": "工具调用已停止。",
+                    })
+                raise AgentCancelled()
 
             # 执行工具（设计第 3.9 节：safe_execute 错误兜底）
             result = self._safe_execute(name, args)
@@ -204,5 +232,3 @@ class AgentLoop:
         # 会导致后续 OpenAI 序列化请求 / notify 输出时抛 UnicodeEncodeError。
         # 在结果进入历史前清掉，根治所有下游崩溃。
         return _sanitize_surrogates(result)
-        
-    

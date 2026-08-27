@@ -70,6 +70,9 @@ function buildPanelOptions(context: ExtensionContext): PanelOptions {
 
   return {
     pythonPath: cfg.pythonPath,
+    vscodePythonPath: workspace
+      .getConfiguration("python")
+      .get<string>("defaultInterpreterPath", ""),
     scriptPath: path.join(agentRoot, "agent", "main.py"),
     workspace: intervieweeProject?.uri.fsPath ?? "",
     workspaceName: intervieweeProject?.name ?? "",

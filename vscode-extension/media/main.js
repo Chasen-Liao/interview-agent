@@ -37,6 +37,7 @@
 
   let currentInterviewerBubble = null;
   let awaiting = false;
+  let stopping = false;
   let pendingAfterConfig = null;
   let interviewStarted = false;
   let resumeAttachment = null;
@@ -48,6 +49,14 @@
   }
 
   function updateActionButton() {
+    if (stopping) {
+      actionBtn.textContent = "■";
+      actionBtn.title = "正在停止";
+      actionBtn.setAttribute("aria-label", "正在停止");
+      actionBtn.disabled = true;
+      actionBtn.classList.add("is-stop");
+      return;
+    }
     if (awaiting) {
       actionBtn.textContent = "■";
       actionBtn.title = "停止";
@@ -123,8 +132,9 @@
 
   function onAction() {
     if (awaiting) {
+      stopping = true;
       vscode.postMessage({ type: "stop" });
-      setAwaiting(false);
+      updateActionButton();
       return;
     }
     send();
@@ -196,6 +206,9 @@
       case "done":
         onDone();
         break;
+      case "cancelled":
+        onCancelled(msg.params);
+        break;
       case "error":
         onError(msg.params);
         break;
@@ -229,6 +242,9 @@
   }
 
   function onStream(params) {
+    if (stopping) {
+      return;
+    }
     if (!currentInterviewerBubble) {
       currentInterviewerBubble = appendBubble("interviewer", "面试官", "");
       currentInterviewerBubble.classList.add("cursor");
@@ -265,6 +281,7 @@
   }
 
   function onDone() {
+    stopping = false;
     if (currentInterviewerBubble) {
       currentInterviewerBubble.classList.remove("cursor");
       currentInterviewerBubble = null;
@@ -273,7 +290,23 @@
     inputEl.focus();
   }
 
+  function onCancelled(params) {
+    const partial = params && params.partial ? String(params.partial) : "";
+    const bubble = currentInterviewerBubble || appendBubble("interviewer", "面试官", "");
+    bubble.classList.remove("cursor");
+    const body = bubble.querySelector(".bubble__body");
+    const length = (body.textContent || partial).length;
+    body.textContent += length
+      ? `\n\n（已停止，生成 ${length} 字）`
+      : "（已停止）";
+    currentInterviewerBubble = null;
+    stopping = false;
+    setAwaiting(false);
+    inputEl.focus();
+  }
+
   function onError(params) {
+    stopping = false;
     appendBubble("error", "出错了", params.message || "未知错误");
     if (currentInterviewerBubble) {
       currentInterviewerBubble.classList.remove("cursor");

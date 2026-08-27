@@ -186,6 +186,18 @@ class TestNotify:
         assert msg["method"] == "done"
         assert msg["params"] == {"session": "s1"}
 
+    def test_notify_cancelled(self, monkeypatch):
+        """停止通知。"""
+        written = []
+        monkeypatch.setattr(protocol.sys.stdout, "write", written.append)
+        monkeypatch.setattr(protocol.sys.stdout, "flush", lambda: None)
+
+        protocol.notify_cancelled("s1", "部分回答")
+
+        msg = json.loads(written[0])
+        assert msg["method"] == "cancelled"
+        assert msg["params"] == {"session": "s1", "partial": "部分回答"}
+
     def test_notify_error(self, monkeypatch):
         """错误通知。"""
         written = []

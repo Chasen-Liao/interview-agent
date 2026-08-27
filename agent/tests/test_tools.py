@@ -13,6 +13,7 @@ import pytest
 
 from agent.tools.builtin import (
     ListDirectoryTool,
+    LookupQuestionsTool,
     ReadFileTool,
     SearchCodeTool,
     _is_source_file,
@@ -92,6 +93,25 @@ class TestListDirectory:
         with pytest.raises(ValueError, match="路径越界"):
             tool.execute(path="../../etc")
 
+    def test_ignores_noise_directories(self, tmp_path):
+        """.venv、.sessions 等目录不进入项目结构结果。"""
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / ".sessions").mkdir()
+        (tmp_path / "bundled-agent").mkdir()
+        (tmp_path / "demo.egg-info").mkdir()
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "src").mkdir()
+
+        tool = ListDirectoryTool(str(tmp_path))
+        result = tool.execute(path=".")
+
+        assert "src" in result
+        assert ".venv" not in result
+        assert ".sessions" not in result
+        assert "bundled-agent" not in result
+        assert "demo.egg-info" not in result
+        assert "tests" not in result
+
 
 # ──────────────────────────────────────────────
 # SearchCodeTool 测试
@@ -156,6 +176,53 @@ class TestSearchCode:
         assert "a.py" in result
         assert "b.py" in result
         assert "c.py" in result  # 子目录也搜到
+
+    def test_ignores_noise_directories(self, tmp_path):
+        """search_code 不应被 .venv/site-packages 和 .sessions 污染。"""
+        (tmp_path / ".venv" / "Lib" / "site-packages").mkdir(parents=True)
+        (tmp_path / ".venv" / "Lib" / "site-packages" / "redis.py").write_text(
+            "redis from dependency\n",
+        )
+        (tmp_path / ".sessions").mkdir()
+        (tmp_path / ".sessions" / "old.json").write_text("redis old chat\n")
+        (tmp_path / "bundled-agent").mkdir()
+        (tmp_path / "bundled-agent" / "copy.py").write_text("redis generated copy\n")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_cache.py").write_text("redis test copy\n")
+        (tmp_path / "app.py").write_text("redis = Redis()\n")
+
+        tool = SearchCodeTool(str(tmp_path))
+        result = tool.execute(keyword="redis")
+
+        assert "app.py" in result
+        assert ".venv" not in result
+        assert ".sessions" not in result
+        assert "bundled-agent" not in result
+        assert "tests" not in result
+
+
+class TestLookupQuestions:
+    def test_lookup_known_topic(self):
+        """命中技术点时返回三层追问。"""
+        result = LookupQuestionsTool().execute("redis")
+
+        assert "redis 追问路径" in result
+        assert "原理" in result
+        assert "权衡" in result
+        assert "实践" in result
+
+    def test_lookup_alias(self):
+        """中文别名能归一到题库主题。"""
+        result = LookupQuestionsTool().execute("并发")
+
+        assert "concurrency 追问路径" in result
+
+    def test_lookup_unknown_topic_lists_available_topics(self):
+        """未命中时给出可用主题，方便模型自我恢复。"""
+        result = LookupQuestionsTool().execute("unknown-tech")
+
+        assert "未找到" in result
+        assert "redis" in result
 
 
 # ──────────────────────────────────────────────

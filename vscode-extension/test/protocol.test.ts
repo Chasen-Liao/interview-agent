@@ -103,6 +103,14 @@ describe("parse", () => {
     expect(n?.method).toBe("done");
   });
 
+  it("解析 cancelled 通知", () => {
+    const n = parse(
+      '{"method":"cancelled","params":{"session":"s1","partial":"部分回答"}}',
+    );
+    expect(n?.method).toBe("cancelled");
+    expect(n?.params.partial).toBe("部分回答");
+  });
+
   it("解析 error 通知", () => {
     const n = parse(
       '{"method":"error","params":{"session":"s1","message":"API 失效"}}',

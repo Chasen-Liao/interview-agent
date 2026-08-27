@@ -208,7 +208,9 @@ class SessionStore:
             ),
             # 第 2 轮：拿到 JD+概况后，调工具摸项目技术栈概貌
             make_tool_call_response("list_directory", {"path": "."}),
-            # 第 3 轮：基于摸到的技术栈，针对一个技术点追问
+            # 第 3 轮：读取内置题库，演示技术点递进追问
+            make_tool_call_response("lookup_questions", {"tech": "python"}),
+            # 第 4 轮：基于题库，针对一个技术点追问
             make_text_response(
                 "我了解了你的项目结构。我看到项目里似乎涉及一些技术点。\n\n"
                 "我们深入聊一个：你提到这个项目解决了一些问题——"
@@ -291,12 +293,18 @@ def build_default_registry(workspace: str) -> ToolRegistry:
     list_directory / search_code / read_file，都以 workspace 为根。
     Agent 循环靠这个 registry 执行工具。
     """
-    from agent.tools.builtin import ListDirectoryTool, ReadFileTool, SearchCodeTool
+    from agent.tools.builtin import (
+        ListDirectoryTool,
+        LookupQuestionsTool,
+        ReadFileTool,
+        SearchCodeTool,
+    )
 
     registry = ToolRegistry()
     registry.register(ListDirectoryTool(workspace))
     registry.register(SearchCodeTool(workspace))
     registry.register(ReadFileTool(workspace))
+    registry.register(LookupQuestionsTool())
     return registry
 
 
@@ -324,7 +332,11 @@ class _DemoLLM:
         self._fallback = fallback
         self._call_count = 0
 
-    def chat(self, messages, tools, on_delta=None):
+    def chat(self, messages, tools, on_delta=None, should_cancel=None):
+        if should_cancel is not None and should_cancel():
+            from agent.llm_client import AgentCancelled
+
+            raise AgentCancelled()
         # 脚本未耗尽：按顺序返回
         if self._call_count < len(self._initial):
             resp = self._initial[self._call_count]
@@ -332,6 +344,10 @@ class _DemoLLM:
             # 伪流式兼容：文本响应时推一次 delta（保持流式接口一致）
             if on_delta is not None and resp.content and not resp.tool_calls:
                 on_delta(resp.content)
+                if should_cancel is not None and should_cancel():
+                    from agent.llm_client import AgentCancelled
+
+                    raise AgentCancelled(resp.content)
             return resp
         # 脚本耗尽：循环复用 fallback（永不报错）
         idx = (self._call_count - len(self._initial)) % len(self._fallback)
@@ -339,4 +355,8 @@ class _DemoLLM:
         resp = self._fallback[idx]
         if on_delta is not None and resp.content:
             on_delta(resp.content)
+            if should_cancel is not None and should_cancel():
+                from agent.llm_client import AgentCancelled
+
+                raise AgentCancelled(resp.content)
         return resp

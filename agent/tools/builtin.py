@@ -1,5 +1,31 @@
 import os
 
+from agent.resources.question_bank import ALIASES, QUESTION_BANK
+
+IGNORED_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "dist",
+    "build",
+    "bundled-agent",
+    "out",
+    "target",
+    "test",
+    "tests",
+    "__tests__",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".sessions",
+    ".idea",
+    ".vscode",
+    ".next",
+    "coverage",
+}
+
 
 def _is_source_file(name: str) -> bool:
     """判断文件名是否是源码/文本文件（search_code 只搜这些）。
@@ -13,6 +39,11 @@ def _is_source_file(name: str) -> bool:
         ".html", ".css", ".sql", ".sh", ".vue",
     )
     return name.lower().endswith(SOURCE_EXTENSIONS)
+
+
+def _is_ignored_dir(name: str) -> bool:
+    """判断目录是否应从项目读取工具中忽略。"""
+    return name in IGNORED_DIRS or name.endswith(".egg-info")
 
 
 class ListDirectoryTool:
@@ -55,6 +86,8 @@ class ListDirectoryTool:
 
         entries = []
         for name in sorted(os.listdir(full_path)):
+            if _is_ignored_dir(name):
+                continue
             entry_path = os.path.join(full_path, name)
             kind = "目录" if os.path.isdir(entry_path) else "文件"
             entries.append(f"{name} ({kind})")
@@ -110,7 +143,8 @@ class SearchCodeTool:
         results: list[str] = []
         max_results = 20  # 第 3.6 节：最多 20 处，避免结果过长带偏 LLM
 
-        for root, _, files in os.walk(self.workspace):
+        for root, dirs, files in os.walk(self.workspace):
+            dirs[:] = [name for name in dirs if not _is_ignored_dir(name)]
             for fname in files:
                 if not _is_source_file(fname):
                     continue
@@ -135,6 +169,65 @@ class SearchCodeTool:
         else:
             header = f"找到 {max_results} 处匹配（已截断）："
         return header + "\n" + "\n".join(results)
+
+
+class LookupQuestionsTool:
+    """按技术点读取内置追问题库。"""
+
+    @property
+    def name(self) -> str:
+        return "lookup_questions"
+
+    @property
+    def schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "lookup_questions",
+                "description": (
+                    "根据已在项目里确认使用的技术点，读取原理、权衡、实践三层追问。"
+                    "只在 search_code 或项目描述确认技术真实存在后使用。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tech": {
+                            "type": "string",
+                            "description": "技术关键字，如 redis、mysql、vue、jwt、并发",
+                        }
+                    },
+                    "required": ["tech"],
+                },
+            },
+        }
+
+    def execute(self, tech: str) -> str:
+        key = _normalize_tech(tech)
+        questions = QUESTION_BANK.get(key)
+        if not questions:
+            topics = ", ".join(sorted(QUESTION_BANK))
+            return f"未找到 '{tech}' 的内置题库。可用主题：{topics}"
+
+        lines = [f"{key} 追问路径："]
+        for layer, question in questions:
+            lines.append(f"- {layer}：{question}")
+        return "\n".join(lines)
+
+
+def _normalize_tech(tech: str) -> str:
+    """把用户或模型输入的技术名归一到题库 key。"""
+    raw = tech.strip().lower()
+    if raw in QUESTION_BANK:
+        return raw
+    if raw in ALIASES:
+        return ALIASES[raw]
+    for key in QUESTION_BANK:
+        if key in raw:
+            return key
+    for alias, key in ALIASES.items():
+        if alias in raw:
+            return key
+    return raw
 
 
 class ReadFileTool:

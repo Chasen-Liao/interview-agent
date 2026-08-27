@@ -79,6 +79,14 @@ class LLMError(Exception):
         super().__init__(self.message)
 
 
+class AgentCancelled(Exception):
+    """当前生成被用户停止，partial 保存已经生成的文本。"""
+
+    def __init__(self, partial: str = "") -> None:
+        super().__init__("生成已停止")
+        self.partial = partial
+
+
 def _classify_openai_error(e: Exception) -> LLMError:
     """把 openai 异常映射成 LLMError（设计第 6.4.2 节）。
 
@@ -126,6 +134,7 @@ class LLMClient(Protocol):
         messages: list[dict],
         tools: list[dict],
         on_delta: Any = None,  # 可选：流式文本回调 Callable[[str], None]
+        should_cancel: Any = None,
     ) -> LLMResponse:
         """调一次 LLM，返回结构化响应。
 
@@ -159,7 +168,10 @@ class FakeLLM:
         messages: list[dict],
         tools: list[dict],
         on_delta: Any = None,
+        should_cancel: Any = None,
     ) -> LLMResponse:
+        if should_cancel is not None and should_cancel():
+            raise AgentCancelled()
         self.call_count += 1
         if self._index >= len(self._script):
             raise RuntimeError(
@@ -172,6 +184,8 @@ class FakeLLM:
         # 但保持接口兼容，让流式链路在测试里也能走通）
         if on_delta is not None and response.content and not response.tool_calls:
             on_delta(response.content)
+            if should_cancel is not None and should_cancel():
+                raise AgentCancelled(response.content)
         return response
     
 
@@ -217,7 +231,19 @@ class OpenAIClient:
     ) -> None:
         # 延迟导入：只在真实使用时才 import openai
         # 这样测试代码 import llm_client 时不会强依赖 openai 库
-        from openai import OpenAI
+        try:
+            from openai import OpenAI
+        except ModuleNotFoundError as e:
+            if e.name != "openai":
+                raise
+            raise LLMError(
+                ERROR_KIND_UNKNOWN,
+                "当前 Python 环境未安装 openai 依赖。\n"
+                "解决方法任选其一：\n"
+                "1. 在设置 interview.pythonPath 里填写目标项目 venv 的 python 完整路径\n"
+                "2. 用当前解释器执行：pip install openai\n"
+                "3. 勾选 Demo Mode 体验完整流程（不需要 API 和依赖）",
+            ) from e
         self._model = model
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
@@ -226,7 +252,10 @@ class OpenAIClient:
         messages: list[dict],
         tools: list[dict],
         on_delta: Any = None,
+        should_cancel: Any = None,
     ) -> LLMResponse:
+        if should_cancel is not None and should_cancel():
+            raise AgentCancelled()
         # 终极防御：清掉所有数据里的孤立代理项。
         # Windows 文件名/文件内容可能含 \udcaa 等代理项，openai 序列化请求
         # body 时会抛 UnicodeEncodeError。在调用前递归清理整个数据结构。
@@ -244,7 +273,9 @@ class OpenAIClient:
         # 传了 on_delta 回调 → 用 stream=True，边收边推 delta（打字效果）
         # 没传 → 非流式（简单，FakeLLM/测试默认路径）
         if on_delta is not None:
-            return self._chat_streaming(kwargs, on_delta)
+            return self._chat_streaming(kwargs, on_delta, should_cancel=should_cancel)
+        if should_cancel is not None and should_cancel():
+            raise AgentCancelled()
         return self._chat_blocking(kwargs)
 
     def _chat_blocking(self, kwargs: dict[str, Any]) -> LLMResponse:
@@ -254,7 +285,7 @@ class OpenAIClient:
         return self._build_response(message)
 
     def _chat_streaming(
-        self, kwargs: dict[str, Any], on_delta: Any,
+        self, kwargs: dict[str, Any], on_delta: Any, should_cancel: Any = None,
     ) -> LLMResponse:
         """流式调用（设计第 1.6、6.5 节）。
 
@@ -273,6 +304,8 @@ class OpenAIClient:
         try:
             stream = self._client.chat.completions.create(**kwargs)
             for chunk in stream:
+                if should_cancel is not None and should_cancel():
+                    raise AgentCancelled(accumulated_content)
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -285,6 +318,8 @@ class OpenAIClient:
                     except Exception:
                         # 回调失败不影响主流程
                         pass
+                    if should_cancel is not None and should_cancel():
+                        raise AgentCancelled(accumulated_content)
 
                 # tool_calls 分片：按 index 累积
                 if delta.tool_calls:
@@ -306,6 +341,8 @@ class OpenAIClient:
                                 slot["arguments"] += tc.function.arguments
 
         except Exception as e:
+            if isinstance(e, AgentCancelled):
+                raise
             # 中断保留（设计第 6.5 节）：流式中途出错（断网等）
             # 保留已生成的文本，追加错误标记，让用户知道生成被中断
             import openai as _openai

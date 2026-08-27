@@ -2,8 +2,8 @@
 .vscode-test/**
 src/**
 test/**
-node_modules/**
 out/test/**
+node_modules/**/test/**
 scripts/**
 bundled-agent/agent/tests/**
 **/__pycache__/**

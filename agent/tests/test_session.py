@@ -237,7 +237,12 @@ class TestBuildRegistry:
         registry = build_default_registry(str(tmp_path))
 
         schemas = {s["function"]["name"] for s in registry.all_schemas()}
-        assert schemas == {"list_directory", "search_code", "read_file"}
+        assert schemas == {
+            "list_directory",
+            "search_code",
+            "read_file",
+            "lookup_questions",
+        }
 
     def test_tools_use_workspace(self, tmp_path):
         """工具的 workspace 与传入一致。"""

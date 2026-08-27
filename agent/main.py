@@ -23,6 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import agent.protocol as protocol
+from agent.llm_client import AgentCancelled
 from agent.session import SessionStore
 
 
@@ -43,10 +44,47 @@ def main(
     if store is None:
         store = SessionStore()
 
+    import threading
+
+    active_thread: threading.Thread | None = None
+    cancel_event = threading.Event()
+
+    def is_busy() -> bool:
+        return active_thread is not None and active_thread.is_alive()
+
+    def handle_init(params: dict) -> None:
+        if is_busy():
+            protocol.notify_error(
+                params.get("session", "unknown"),
+                "当前回答仍在生成，请先停止当前回答后再调整配置。",
+            )
+            return
+        _handle_init(store, params)
+
+    def handle_chat(params: dict) -> None:
+        nonlocal active_thread, cancel_event
+        session = params.get("session", "default")
+        if is_busy():
+            protocol.notify_error(session, "请先停止当前回答后再发送新消息。")
+            return
+        cancel_event = threading.Event()
+
+        def worker() -> None:
+            try:
+                _handle_chat(store, params, should_cancel=cancel_event.is_set)
+            except Exception as e:
+                protocol.notify_error(session, f"内部错误: {type(e).__name__}: {e}")
+
+        active_thread = threading.Thread(target=worker, daemon=True)
+        active_thread.start()
+
+    def handle_stop(params: dict) -> None:
+        _handle_stop(cancel_event, params)
+
     handlers = {
-        "init": lambda params: _handle_init(store, params),
-        "chat": lambda params: _handle_chat(store, params),
-        "stop": lambda params: _handle_stop(store, params),
+        "init": handle_init,
+        "chat": handle_chat,
+        "stop": handle_stop,
     }
 
     for line in stream:
@@ -60,6 +98,9 @@ def main(
             # 业务层错误：发 error 通知，不杀进程（设计第 6.4.2 节）
             session = msg.get("params", {}).get("session", "unknown")
             protocol.notify_error(session, f"内部错误: {type(e).__name__}: {e}")
+
+    if active_thread is not None:
+        active_thread.join()
 
 
 # ──────────────────────────────────────────────
@@ -101,7 +142,11 @@ def _handle_init(store: SessionStore, params: dict) -> None:
     )
 
 
-def _handle_chat(store: SessionStore, params: dict) -> None:
+def _handle_chat(
+    store: SessionStore,
+    params: dict,
+    should_cancel=None,
+) -> None:
     """处理 chat 消息：跑一轮 Agent 循环（设计第 1.5.3 节时序）。
 
     chat 是最常用的消息——用户说的话。整个 Agent 循环在这里触发：
@@ -148,7 +193,12 @@ def _handle_chat(store: SessionStore, params: dict) -> None:
             on_tool_call=on_tool_call,
             on_response=on_response,
             on_delta=on_delta,
+            should_cancel=should_cancel,
         )
+    except AgentCancelled as e:
+        store.save(session)
+        protocol.notify_cancelled(session, e.partial)
+        return
     except Exception as e:
         # LLM 调用失败等：发 error，不杀进程（设计第 6.4.1 节）
         import traceback
@@ -177,15 +227,12 @@ def _handle_chat(store: SessionStore, params: dict) -> None:
     protocol.notify_done(session)
 
 
-def _handle_stop(store: SessionStore, params: dict) -> None:
+def _handle_stop(cancel_event, params: dict) -> None:
     """处理 stop 消息：中断当前生成（设计第 1.5.2 节）。
 
-    MVP 阶段 Agent 循环是同步的，stop 主要是个协议占位——
-    真正的中断要在 Phase 6 接异步/线程时实现。
-    收到 stop 至少不崩、不报错。
+    空闲时 stop 不报错；运行中由主循环设置 cancel_event。
     """
-    # MVP：no-op，协议兼容
-    pass
+    cancel_event.set()
 
 
 def _inject_attached_code(text: str, attached: dict) -> str:

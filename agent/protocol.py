@@ -66,7 +66,7 @@ def notify(method: str, params: dict) -> None:
     不能攒在缓冲区里（设计第 1.6 节 stdout 缓冲区陷阱）。
 
     参数：
-        method: 通知类型（stream / tool_call / done / error）
+        method: 通知类型（stream / tool_call / done / cancelled / error）
         params: 通知参数
     """
     msg = {"jsonrpc": "2.0", "method": method, "params": params}
@@ -112,6 +112,11 @@ def notify_tool_call(
 def notify_done(session: str) -> None:
     """本轮 Agent 循环结束（设计第 1.5.3 节时序末尾）。"""
     notify("done", {"session": session})
+
+
+def notify_cancelled(session: str, partial: str = "") -> None:
+    """本轮生成被用户停止。partial 是已生成文本。"""
+    notify("cancelled", {"session": session, "partial": partial})
 
 
 def notify_error(session: str, message: str) -> None:

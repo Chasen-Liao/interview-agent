@@ -6,7 +6,7 @@
  *
  * 两类消息：
  * - Request（TS → Python）：init / chat / stop
- * - Notification（Python → TS）：stream / tool_call / done / error
+ * - Notification（Python → TS）：stream / tool_call / done / cancelled / error
  *
  * 关键：Python 侧字段用 snake_case（api_key / base_url / attached_code），
  * 这里定义的类型和序列化函数都用 snake_case，与 Python 严格一致，
@@ -94,6 +94,15 @@ export interface DoneNotification {
   };
 }
 
+/** 本轮生成被用户停止，partial 是 Python 侧记录的已生成文本。 */
+export interface CancelledNotification {
+  method: "cancelled";
+  params: {
+    session: string;
+    partial?: string;
+  };
+}
+
 /** 错误通知：API 失效、网络断、工具报错。 */
 export interface ErrorNotification {
   method: "error";
@@ -107,6 +116,7 @@ export type Notification =
   | StreamNotification
   | ToolCallNotification
   | DoneNotification
+  | CancelledNotification
   | ErrorNotification;
 
 /** 解析出的通知类型（带 method 字面量，方便 switch 收窄）。 */
@@ -162,6 +172,7 @@ function isNotificationShape(value: unknown): value is ParsedNotification {
     method === "stream" ||
     method === "tool_call" ||
     method === "done" ||
+    method === "cancelled" ||
     method === "error"
   );
 }

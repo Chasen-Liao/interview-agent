@@ -324,6 +324,30 @@ class TestLLMErrorDataclass:
         assert str(err) == "key 无效"
 
 
+class TestOpenAIImportError:
+    def test_missing_openai_dependency_becomes_friendly_llm_error(self, monkeypatch):
+        """真实模式缺 openai 包时，提示用户如何修复环境。"""
+        import builtins
+
+        from agent.llm_client import ERROR_KIND_UNKNOWN, LLMError, OpenAIClient
+
+        original_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "openai":
+                raise ModuleNotFoundError("No module named 'openai'", name="openai")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        with pytest.raises(LLMError) as exc_info:
+            OpenAIClient(api_key="sk-test")
+
+        assert exc_info.value.kind == ERROR_KIND_UNKNOWN
+        assert "pip install openai" in exc_info.value.message
+        assert "Demo Mode" in exc_info.value.message
+
+
 # ──────────────────────────────────────────────
 # 自动重试测试（设计第 6.4.2 节延伸，Phase 7-B）
 # ──────────────────────────────────────────────
