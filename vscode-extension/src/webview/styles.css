@@ -1,209 +1,290 @@
-/* Interview Agent Webview 样式
- * 四类气泡：用户（右）、面试官（左）、工具（中性灰）、错误（红）
- * 设计第 5.2、5.3.2、5.4.4 节
- */
-
 * {
   box-sizing: border-box;
-}
-
-:root {
-  --composer-height: 140px;
 }
 
 html,
 body {
   margin: 0;
   padding: 0;
+  width: 100%;
   height: 100vh;
-  display: flex;
-  flex-direction: column;
+  overflow: hidden;
   font-family: var(--vscode-font-family, sans-serif);
-  font-size: var(--vscode-font-size, 14px);
-  color: var(--vscode-foreground, #333);
-  background: var(--vscode-editor-background, #fff);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 #app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-}
-
-/* ───────── 消息流 ───────── */
-.messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* ───────── 气泡基类 ───────── */
-.bubble {
-  max-width: 85%;
-  padding: 10px 14px;
-  border-radius: 10px;
-  line-height: 1.5;
-  word-wrap: break-word;
-  white-space: pre-wrap;
-  /* 自适应：透明背景 + 主题前景色（深色主题=浅字，浅色主题=深字） */
-  background: transparent;
-  color: var(--vscode-foreground, currentColor);
-  animation: fadeIn 0.15s ease-out;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* 用户气泡：靠右，用边框区分（背景透明，字体白） */
-.bubble--user {
-  align-self: flex-end;
-  border: 1px solid var(--vscode-button-background, #007acc);
-}
-
-/* 面试官气泡：靠左，细边框区分（边框色随主题，自适应深浅） */
-.bubble--interviewer {
-  align-self: flex-start;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
-}
-
-/* 工具气泡：用左边框强调色区分，等宽字体 */
-.bubble--tool {
-  align-self: flex-start;
-  max-width: 90%;
-  border-left: 3px solid var(--vscode-textLink-foreground, #007acc);
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.9em;
-}
-
-/* 工具气泡的进行中状态：脉冲点 */
-.bubble--tool.is-running .bubble__title::after {
-  content: " ●";
-  animation: pulse 1s infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
-}
-
-/* 错误气泡：透明背景 + 红色（用主题 errorForeground，自适应深浅主题） */
-.bubble--error {
-  align-self: flex-start;
-  border-left: 3px solid var(--vscode-errorForeground, #d32f2f);
-  color: var(--vscode-errorForeground, #d32f2f);
-}
-
-/* 气泡角色标签（小字） */
-.bubble__role {
-  font-size: 0.75em;
-  opacity: 0.7;
-  margin-bottom: 3px;
-}
-
-/* 工具结果区：用主题代码块背景，文字继承气泡前景色（自适应） */
-.bubble__result {
-  margin-top: 6px;
-  padding: 6px;
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
-  border-radius: 4px;
-  font-size: 0.85em;
-  max-height: 200px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  color: inherit;
-}
-}
-
-/* ───────── 输入区 ───────── */
-.composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px 36px;
-  align-items: end;
-  gap: 6px;
-  padding: 10px;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   width: 100%;
-  height: var(--composer-height);
-  min-height: var(--composer-height);
-  flex: 0 0 var(--composer-height);
-  border-top: 1px solid var(--vscode-panel-border, #ddd);
-  background: var(--vscode-editor-background, #fff);
+  height: 100vh;
+  min-width: 0;
 }
 
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
+}
+
+.topbar__title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--vscode-icon-foreground);
+  background: transparent;
+}
+
+.icon-button:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.config,
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
+}
+
+.setup.is-collapsed {
+  display: none;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field__label {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.field__control,
+.field__textarea,
 .composer__input {
   width: 100%;
   min-width: 0;
-  resize: none;
-  padding: 10px 12px;
-  font-family: inherit;
-  font-size: inherit;
-  color: var(--vscode-input-foreground, inherit);
-  background: var(--vscode-input-background, transparent);
-  border: 1px solid var(--vscode-input-border, #ccc);
-  border-radius: 6px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
   outline: none;
-  height: 100%;
+}
+
+.field__control {
+  height: 28px;
+  padding: 4px 6px;
+}
+
+.field__textarea,
+.composer__input {
+  resize: none;
+  padding: 7px 8px;
+  line-height: 1.45;
+}
+
+.field__control:focus,
+.field__textarea:focus,
+.composer__input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.config__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--vscode-foreground);
+}
+
+.primary-button,
+.secondary-button,
+.composer__send,
+.composer__stop {
+  border: none;
+  border-radius: 4px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.primary-button,
+.secondary-button {
+  min-height: 30px;
+  padding: 5px 10px;
+}
+
+.secondary-button {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+
+.primary-button:hover,
+.composer__send:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.secondary-button:hover,
+.composer__stop:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.status {
+  min-height: 16px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   min-height: 0;
+  padding: 10px;
   overflow-y: auto;
 }
 
-.composer__input:focus {
-  border-color: var(--vscode-focusBorder, #007acc);
+.bubble {
+  max-width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.bubble--user {
+  border-color: var(--vscode-button-background);
+}
+
+.bubble--interviewer {
+  border-color: var(--vscode-panel-border);
+}
+
+.bubble--tool {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  border-left: 3px solid var(--vscode-textLink-foreground);
+}
+
+.bubble--tool.is-running .bubble__title::after {
+  content: " ...";
+}
+
+.bubble--error {
+  color: var(--vscode-errorForeground);
+  border-left: 3px solid var(--vscode-errorForeground);
+}
+
+.bubble__role {
+  margin-bottom: 3px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.bubble__result {
+  max-height: 180px;
+  margin-top: 6px;
+  padding: 6px;
+  overflow-y: auto;
+  color: inherit;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px 32px;
+  gap: 6px;
+  align-items: end;
+  min-height: 100px;
+  padding: 10px;
+  border-top: 1px solid var(--vscode-sideBarSectionHeader-border);
+}
+
+.composer__input {
+  height: 80px;
+  min-height: 80px;
+  overflow-y: auto;
 }
 
 .composer__send,
 .composer__stop {
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.composer__send {
-  background: var(--vscode-button-background, #007acc);
-  color: var(--vscode-button-foreground, #fff);
-}
-
-.composer__send:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .composer__stop {
-  background: var(--vscode-button-secondaryBackground, #555);
-  color: var(--vscode-button-secondaryForeground, #fff);
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
 }
 
-.composer__stop:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* 流式光标（打字效果进行中） */
 .cursor::after {
   content: "▋";
+  opacity: 0.7;
   animation: blink 0.8s infinite;
-  opacity: 0.6;
 }
 
 @keyframes blink {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 0; }
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0;
+  }
 }

@@ -9,6 +9,7 @@
  */
 
 import * as path from "path";
+import { existsSync } from "fs";
 import {
   commands,
   ConfigurationTarget,
@@ -17,7 +18,11 @@ import {
   window,
   workspace,
 } from "vscode";
-import { InterviewPanel } from "./webviewPanel";
+import {
+  InterviewViewProvider,
+  PanelOptions,
+  WebviewConfigUpdate,
+} from "./webviewPanel";
 
 /** interview.* 配置的强类型读取。 */
 interface InterviewConfig {
@@ -47,66 +52,87 @@ function readConfig(): InterviewConfig {
   };
 }
 
-export function activate(context: ExtensionContext): void {
-  const htmlBasePath = Uri.joinPath(context.extensionUri, "media");
+function resolveAgentRoot(context: ExtensionContext): string {
+  const bundledRoot = Uri.joinPath(context.extensionUri, "bundled-agent").fsPath;
+  const bundledMain = path.join(bundledRoot, "agent", "main.py");
+  if (existsSync(bundledMain)) {
+    return bundledRoot;
+  }
 
-  // 关键：agent/main.py 的位置基于插件自身路径推算，不依赖用户打开了哪个工作区。
-  // 插件在 <repo>/vscode-extension/，往上两级是仓库根（含 agent/）。
-  // 这样即使用户在 Extension Host 窗口切到别的项目，也能找到正确的内核脚本。
-  // 作为"被面试"的项目代码（workspace）则用用户当前打开的文件夹。
-  const repoRoot = Uri.joinPath(context.extensionUri, "..").fsPath;
-  const agentScriptPath = path.join(repoRoot, "agent", "main.py");
+  // 开发调试时 bundled-agent 可能还没生成，保留源码目录兜底。
+  return Uri.joinPath(context.extensionUri, "..").fsPath;
+}
+
+function buildPanelOptions(context: ExtensionContext): PanelOptions {
+  const cfg = readConfig();
+  const agentRoot = resolveAgentRoot(context);
+  const intervieweeProject =
+    workspace.workspaceFolders?.[0]?.uri.fsPath ?? agentRoot;
+
+  return {
+    pythonPath: cfg.pythonPath,
+    scriptPath: path.join(agentRoot, "agent", "main.py"),
+    workspace: intervieweeProject,
+    pythonPathRoot: agentRoot,
+    apiKey: cfg.apiKey,
+    model: cfg.model,
+    baseUrl: cfg.baseUrl || undefined,
+    resume: cfg.resume || undefined,
+    demoMode: cfg.demoMode,
+    maxSteps: cfg.maxSteps,
+    maxHistoryTokens: cfg.maxHistoryTokens,
+    maxKeptFull: cfg.maxKeptFull,
+  };
+}
+
+async function saveWebviewConfig(config: WebviewConfigUpdate): Promise<void> {
+  const cfg = workspace.getConfiguration("interview");
+  const target = ConfigurationTarget.Global;
+  if (typeof config.model === "string") {
+    await cfg.update("model", config.model.trim() || "gpt-4o-mini", target);
+  }
+  if (typeof config.baseUrl === "string") {
+    await cfg.update("baseUrl", config.baseUrl.trim(), target);
+  }
+  if (typeof config.apiKey === "string" && config.apiKey.trim()) {
+    await cfg.update("apiKey", config.apiKey.trim(), target);
+  }
+  if (typeof config.demoMode === "boolean") {
+    await cfg.update("demoMode", config.demoMode, target);
+  }
+}
+
+export function activate(context: ExtensionContext): void {
+  console.log("[Interview Agent] activate");
+
+  const htmlBasePath = Uri.joinPath(context.extensionUri, "media");
+  const provider = new InterviewViewProvider(
+    htmlBasePath,
+    () => buildPanelOptions(context),
+    saveWebviewConfig,
+  );
 
   // ───────── interview.start ─────────
-  const startCmd = commands.registerCommand("interview.start", async () => {
-    const cfg = readConfig();
-    // demoMode 下用 FakeLLM，不需要 apiKey；非 demoMode 必须有 key
-    if (!cfg.demoMode && !cfg.apiKey) {
-      const choice = await window.showErrorMessage(
-        "还未配置 API Key。请在设置里填写 interview.apiKey，或开启 interview.demoMode 体验零费用演示。",
-        "打开设置",
-      );
-      if (choice === "打开设置") {
-        commands.executeCommand("workbench.action.openSettings", "interview");
-      }
-      return;
-    }
-
-    // "被面试"的项目 = 用户当前打开的文件夹（面试官翻这里的代码）
-    const intervieweeProject =
-      workspace.workspaceFolders?.[0]?.uri.fsPath ?? repoRoot;
-
-    const panel = new InterviewPanel(htmlBasePath, {
-      pythonPath: cfg.pythonPath,
-      scriptPath: agentScriptPath,
-      workspace: intervieweeProject,
-      // PYTHONPATH 用仓库根（agent 包所在），不随被面试项目变
-      pythonPathRoot: repoRoot,
-      apiKey: cfg.apiKey || "demo",
-      model: cfg.model,
-      baseUrl: cfg.baseUrl || undefined,
-      resume: cfg.resume || undefined,
-      demoMode: cfg.demoMode,
-      // 调优参数透传（Phase 7-D 可配化）
-      maxSteps: cfg.maxSteps,
-      maxHistoryTokens: cfg.maxHistoryTokens,
-      maxKeptFull: cfg.maxKeptFull,
-    });
-    panel.open();
+  const startCmd = commands.registerCommand("interview.start", () => {
+    provider.focus();
   });
 
   // ───────── interview.askAboutSelection ─────────
   // 对选中代码提问：填入输入框后自动发送（复用 start 打开的面板逻辑）
   const askCmd = commands.registerCommand(
     "interview.askAboutSelection",
-    async () => {
-      // MVP：等同于 start（选中代码由 Webview 读取时自动注入）
-      // 完整版应在面板输入框预填"针对这段代码："，这里先走 start
-      commands.executeCommand("interview.start");
+    () => {
+      provider.prefillSelectionQuestion();
     },
   );
 
-  context.subscriptions.push(startCmd, askCmd);
+  context.subscriptions.push(
+    window.registerWebviewViewProvider("interview.chatView", provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+    startCmd,
+    askCmd,
+  );
 }
 
 export function deactivate(): void {

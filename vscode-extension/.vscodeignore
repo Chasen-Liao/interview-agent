@@ -4,7 +4,12 @@ src/**
 test/**
 node_modules/**
 out/test/**
+scripts/**
+bundled-agent/agent/tests/**
+**/__pycache__/**
+**/.pytest_cache/**
+**/*.pyc
 tsconfig.json
 vitest.config.ts
 .gitignore
-*.map
+**/*.map

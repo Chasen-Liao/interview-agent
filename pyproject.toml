@@ -9,12 +9,16 @@ dependencies = [
     "openai>=2.0",      # OpenAI 兼容 API 客户端（Phase 3）
 ]
 
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
 # 开发依赖：只有开发/测试时才需要的工具
 # 装法：pip install -e ".[dev]"（-e 是 editable，改代码不用重装）
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",      # 测试框架（第 7 节）
     "ruff>=0.4",        # 代码检查 + 格式化（极快，替代 flake8/black）
+    "httpx>=0.27",      # 测试里构造 OpenAI 状态错误对象需要
 ]
 
 # ──────────────────────────────────────────────

@@ -1,66 +1,135 @@
-/**
- * Webview 前端逻辑（设计第 5.3、5.5 节）。
- *
- * 通信（设计第 5.5 节两跳）：Webview ←postMessage→ Extension Host ←stdio→ Python。
- * 本文件只负责 postMessage 第一跳 + UI 渲染，不碰子进程。
- *
- * 渲染四类通知：
- * - stream   → 追加到当前面试官气泡（打字效果）
- * - tool_call → 插工具气泡（start→"正在执行"，end→填结果）
- * - done     → 结束本轮，恢复输入框
- * - error    → 红色气泡
- *
- * 设计第 5.7 节原则：界面上显示的必须是真实发生的，不放假动画。
- */
-
 // @ts-check
 (function () {
   const vscode = acquireVsCodeApi();
 
-  // ───────── DOM ─────────
+  const providers = {
+    openai: { model: "gpt-4o-mini", baseUrl: "" },
+    deepseek: { model: "deepseek-chat", baseUrl: "https://api.deepseek.com" },
+    qwen: {
+      model: "qwen-plus",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
+    zhipu: {
+      model: "glm-4-flash",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    },
+    custom: { model: "", baseUrl: "" },
+  };
+
   const messagesEl = document.getElementById("messages");
   const inputEl = document.getElementById("input");
   const sendBtn = document.getElementById("send");
   const stopBtn = document.getElementById("stop");
+  const providerEl = document.getElementById("provider");
+  const modelEl = document.getElementById("model");
+  const baseUrlEl = document.getElementById("baseUrl");
+  const apiKeyEl = document.getElementById("apiKey");
+  const demoModeEl = document.getElementById("demoMode");
+  const saveConfigBtn = document.getElementById("saveConfig");
+  const settingsBtn = document.getElementById("settings");
+  const configStatusEl = document.getElementById("configStatus");
+  const jdEl = document.getElementById("jd");
+  const backgroundEl = document.getElementById("background");
+  const startInterviewBtn = document.getElementById("startInterview");
+  const setupEl = document.getElementById("setup");
 
-  // ───────── 会话状态 ─────────
-  // 当前正在流式输出的面试官气泡（stream 通知追加到这里）
   let currentInterviewerBubble = null;
-  // 当前是否正在等待回复（done/error 后恢复 false）
   let awaiting = false;
+  let pendingAfterConfig = null;
+  let interviewStarted = false;
 
-  // ──────────────────────────────────────────────
-  // 发送：用户输入 → postMessage 给 Host
-  // ──────────────────────────────────────────────
+  function setAwaiting(value) {
+    awaiting = value;
+    sendBtn.disabled = value;
+    stopBtn.disabled = !value;
+  }
+
+  function collectConfig() {
+    const config = {
+      model: modelEl.value.trim(),
+      baseUrl: baseUrlEl.value.trim(),
+      demoMode: demoModeEl.checked,
+    };
+    const apiKey = apiKeyEl.value.trim();
+    if (apiKey) {
+      config.apiKey = apiKey;
+    }
+    return config;
+  }
+
+  function saveConfig(afterSave) {
+    pendingAfterConfig = afterSave || null;
+    vscode.postMessage({ type: "updateConfig", config: collectConfig() });
+    setStatus("保存中...");
+  }
+
+  function startInterview() {
+    const jd = jdEl.value.trim();
+    if (!jd) {
+      appendBubble("error", "出错了", "请先填写岗位 JD。");
+      return;
+    }
+
+    const background = backgroundEl.value.trim();
+    const text = [
+      "我们开始一场技术面试。",
+      "",
+      `岗位 JD：\n${jd}`,
+      background ? `\n简历 / 项目背景：\n${background}` : "",
+      "\n请基于岗位 JD 和当前 VS Code 工作区项目，先了解项目结构，再开始第一轮面试提问。",
+    ].join("\n");
+
+    saveConfig(() => {
+      interviewStarted = true;
+      setupEl.classList.add("is-collapsed");
+      sendChat(text, "已提交岗位 JD 和项目背景，开始面试。");
+    });
+  }
 
   function send() {
     const text = inputEl.value.trim();
     if (!text || awaiting) {
       return;
     }
-    // 渲染用户气泡
-    appendUserMessage(text);
+    saveConfig(() => sendChat(text, text));
+  }
+
+  function sendChat(text, displayText) {
+    appendBubble("user", "我", displayText);
     inputEl.value = "";
     setAwaiting(true);
-    // 通知 Host（attached_code 由 Host 从编辑器选中区读，前端只传文本）
     vscode.postMessage({ type: "chat", text });
   }
 
-  function setAwaiting(v) {
-    awaiting = v;
-    sendBtn.disabled = v;
-    stopBtn.disabled = !v;
-  }
-
-  // ──────────────────────────────────────────────
-  // 接收：Host 的通知 → 渲染
-  // ──────────────────────────────────────────────
-
   window.addEventListener("message", (event) => {
     const msg = event.data;
-    if (!msg || typeof msg.method !== "string") {
+    if (!msg) {
       return;
     }
+
+    if (msg.type === "config") {
+      applyConfig(msg.config);
+      return;
+    }
+    if (msg.type === "configSaved") {
+      apiKeyEl.value = "";
+      setStatus("已保存");
+      const next = pendingAfterConfig;
+      pendingAfterConfig = null;
+      if (next) {
+        next();
+      }
+      return;
+    }
+    if (msg.type === "prefill") {
+      inputEl.value = msg.text || "";
+      inputEl.focus();
+      return;
+    }
+    if (typeof msg.method !== "string") {
+      return;
+    }
+
     switch (msg.method) {
       case "stream":
         onStream(msg.params);
@@ -69,7 +138,7 @@
         onToolCall(msg.params);
         break;
       case "done":
-        onDone(msg.params);
+        onDone();
         break;
       case "error":
         onError(msg.params);
@@ -77,13 +146,28 @@
     }
   });
 
+  function applyConfig(config) {
+    modelEl.value = config.model || "gpt-4o-mini";
+    baseUrlEl.value = config.baseUrl || "";
+    demoModeEl.checked = Boolean(config.demoMode);
+    apiKeyEl.placeholder = config.hasApiKey ? "已配置" : "";
+    providerEl.value = inferProvider(modelEl.value, baseUrlEl.value);
+  }
+
+  function inferProvider(model, baseUrl) {
+    for (const [key, value] of Object.entries(providers)) {
+      if (key !== "custom" && value.model === model && value.baseUrl === baseUrl) {
+        return key;
+      }
+    }
+    return "custom";
+  }
+
   function onStream(params) {
-    // 第一段文字：新建面试官气泡
     if (!currentInterviewerBubble) {
-      currentInterviewerBubble = appendBubble("interviewer", "🤖 面试官", "");
+      currentInterviewerBubble = appendBubble("interviewer", "面试官", "");
       currentInterviewerBubble.classList.add("cursor");
     }
-    // 追加文本（打字效果——MVP 直接拼接，非逐字）
     const body = currentInterviewerBubble.querySelector(".bubble__body");
     body.textContent += params.delta || "";
     scrollToBottom();
@@ -92,21 +176,18 @@
   function onToolCall(params) {
     const { tool, phase, args, result } = params;
     if (phase === "start") {
-      // 插一个"正在执行"的工具气泡，标记 running
-      const bubble = appendBubble("tool", `🔍 ${tool}`, formatArgs(args));
+      const bubble = appendBubble("tool", tool, formatArgs(args));
       bubble.classList.add("is-running");
-      bubble.dataset.toolId = tool; // 简单标识，end 时按需更新
-      bubble._startBubble = bubble;
-      currentInterviewerBubble = null; // 工具调用打断当前回答气泡
+      bubble.dataset.toolId = tool;
+      currentInterviewerBubble = null;
     } else {
-      // end：找最近的同名工具气泡，填结果，去掉 running
-      const candidates = messagesEl.querySelectorAll(
-        `.bubble--tool.is-running[data-tool-id="${tool}"]`,
-      );
+      const candidates = Array.from(
+        messagesEl.querySelectorAll(".bubble--tool.is-running"),
+      ).filter((el) => el.dataset.toolId === tool);
       const last = candidates[candidates.length - 1];
       if (last) {
         last.classList.remove("is-running");
-        last.querySelector(".bubble__title").textContent = `✅ ${tool} 完成`;
+        last.querySelector(".bubble__title").textContent = `${tool} 完成`;
         if (result) {
           const resultEl = document.createElement("div");
           resultEl.className = "bubble__result";
@@ -128,7 +209,7 @@
   }
 
   function onError(params) {
-    appendBubble("error", "⚠️ 出错了", params.message || "未知错误");
+    appendBubble("error", "出错了", params.message || "未知错误");
     if (currentInterviewerBubble) {
       currentInterviewerBubble.classList.remove("cursor");
       currentInterviewerBubble = null;
@@ -136,21 +217,6 @@
     setAwaiting(false);
   }
 
-  // ──────────────────────────────────────────────
-  // DOM 辅助
-  // ──────────────────────────────────────────────
-
-  function appendUserMessage(text) {
-    appendBubble("user", "👤 我", text);
-  }
-
-  /**
-   * 创建并追加一个气泡。
-   * @param {"user"|"interviewer"|"tool"|"error"} kind
-   * @param {string} title 角色标签
-   * @param {string} body 正文
-   * @returns {HTMLElement}
-   */
   function appendBubble(kind, title, body) {
     const bubble = document.createElement("div");
     bubble.className = `bubble bubble--${kind}`;
@@ -181,21 +247,41 @@
     }
   }
 
+  function setStatus(text) {
+    configStatusEl.textContent = text;
+  }
+
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  // ──────────────────────────────────────────────
-  // 事件绑定
-  // ──────────────────────────────────────────────
+  providerEl.addEventListener("change", () => {
+    const preset = providers[providerEl.value];
+    if (preset && providerEl.value !== "custom") {
+      modelEl.value = preset.model;
+      baseUrlEl.value = preset.baseUrl;
+    }
+  });
 
+  modelEl.addEventListener("input", () => {
+    providerEl.value = inferProvider(modelEl.value.trim(), baseUrlEl.value.trim());
+  });
+
+  baseUrlEl.addEventListener("input", () => {
+    providerEl.value = inferProvider(modelEl.value.trim(), baseUrlEl.value.trim());
+  });
+
+  saveConfigBtn.addEventListener("click", () => saveConfig());
+  settingsBtn.addEventListener("click", () => {
+    vscode.postMessage({ type: "openSettings" });
+  });
+  startInterviewBtn.addEventListener("click", startInterview);
   sendBtn.addEventListener("click", send);
   stopBtn.addEventListener("click", () => {
     vscode.postMessage({ type: "stop" });
     setAwaiting(false);
   });
 
-  // Enter 发送，Shift+Enter 换行
   inputEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -203,7 +289,8 @@
     }
   });
 
-  // 输入框为固定高度（CSS 控制），内容超出时内部滚动，无需 JS 动态增高
-
-  inputEl.focus();
+  vscode.postMessage({ type: "ready" });
+  if (!interviewStarted) {
+    jdEl.focus();
+  }
 })();

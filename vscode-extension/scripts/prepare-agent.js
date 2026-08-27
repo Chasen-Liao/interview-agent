@@ -1,0 +1,29 @@
+const fs = require("fs");
+const path = require("path");
+
+const extensionRoot = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(extensionRoot, "..");
+const source = path.join(repoRoot, "agent");
+const target = path.join(extensionRoot, "bundled-agent", "agent");
+
+if (!fs.existsSync(source)) {
+  throw new Error(`Agent source not found: ${source}`);
+}
+
+fs.rmSync(target, { recursive: true, force: true });
+fs.mkdirSync(path.dirname(target), { recursive: true });
+fs.cpSync(source, target, {
+  recursive: true,
+  filter: (file) => {
+    const normalized = file.replaceAll(path.sep, "/");
+    return !(
+      normalized.includes("/tests/") ||
+      normalized.endsWith("/__pycache__") ||
+      normalized.includes("/__pycache__/") ||
+      normalized.endsWith(".pyc") ||
+      normalized.includes("/.pytest_cache/")
+    );
+  },
+});
+
+console.log(`Copied Agent runtime to ${target}`);

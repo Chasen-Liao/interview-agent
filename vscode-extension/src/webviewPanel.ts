@@ -1,26 +1,29 @@
 /**
- * Webview 面板管理（设计第 5.5 节两跳中转 + 第 5.3.3 节选中代码注入）。
+ * Webview 面试视图管理。
  *
- * 这是 Extension Host 里的"中转站"：
- * - Webview → Host（chat/stop 消息）→ 转成 Request 发给 Python
- * - Python → Host（stream/tool_call/done/error 通知）→ postMessage 给 Webview
- *
- * Host 不放业务逻辑（设计第 5.5 节），只做翻译和转发。
+ * Extension Host 只做三件事：
+ * - 把 Webview 的聊天消息转成 Python Agent 请求
+ * - 把 Python Agent 通知转发给 Webview
+ * - 读取/保存模型配置并在必要时重启 Python 子进程
  */
 
 import { randomBytes } from "crypto";
+import { readFileSync } from "fs";
 import {
+  CancellationToken,
   OutputChannel,
   Uri,
-  ViewColumn,
   Webview,
   WebviewView,
+  WebviewViewProvider,
+  WebviewViewResolveContext,
+  commands,
   window,
 } from "vscode";
 import { AgentClient } from "./agentClient";
 import { buildChat, buildStop } from "./protocol";
 
-/** 共享的调试输出通道（整个插件一个，所有面板的 Python 日志都写这里）。 */
+/** 共享的调试输出通道（整个插件一个，所有 Python 日志都写这里）。 */
 let debugChannel: OutputChannel | null = null;
 function getDebugChannel(): OutputChannel {
   if (!debugChannel) {
@@ -35,107 +38,133 @@ export interface PanelOptions {
   scriptPath: string;
   /** 被面试的项目根（工具翻代码的根）。 */
   workspace: string;
-  /** agent 包所在根（PYTHONPATH 用），通常 = 仓库根。 */
+  /** agent 包所在根（PYTHONPATH 用），通常 = bundled-agent 根。 */
   pythonPathRoot: string;
   apiKey: string;
   model: string;
   baseUrl?: string;
   resume?: string;
-  /** 演示模式：用 FakeLLM，零费用（设计第 5E 节冒烟）。 */
+  /** 演示模式：用 FakeLLM，零费用。 */
   demoMode?: boolean;
-  // 调优参数（Phase 7-D 可配化，可选）
   maxSteps?: number;
   maxHistoryTokens?: number;
   maxKeptFull?: number;
 }
 
-export class InterviewPanel {
-  private agent: AgentClient;
-  private readonly sessionId: string;
+/** 发给 Webview 的配置快照；不回传 API Key 明文。 */
+export interface WebviewConfigSnapshot {
+  model: string;
+  baseUrl: string;
+  demoMode: boolean;
+  hasApiKey: boolean;
+}
+
+/** Webview 发来的配置变更。 */
+export interface WebviewConfigUpdate {
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  demoMode?: boolean;
+}
+
+type WebviewToHostMessage =
+  | { type: "ready" }
+  | { type: "chat"; text: string }
+  | { type: "stop" }
+  | { type: "openSettings" }
+  | { type: "updateConfig"; config: WebviewConfigUpdate };
+
+export class InterviewViewProvider implements WebviewViewProvider {
+  private view: WebviewView | undefined;
+  private agent: AgentClient | null = null;
+  private sessionId = makeSessionId();
 
   constructor(
     private readonly htmlBasePath: Uri,
-    options: PanelOptions,
-  ) {
-    // 每个 Webview 一个独立会话 id（Python 侧据此隔离历史）
-    this.sessionId = `vscode-${Date.now()}`;
+    private readonly buildOptions: () => PanelOptions,
+    private readonly saveConfig: (config: WebviewConfigUpdate) => Promise<void>,
+  ) {}
 
-    this.agent = new AgentClient({
-      pythonPath: options.pythonPath,
-      scriptPath: options.scriptPath,
-      workspace: options.workspace,
-      pythonPathRoot: options.pythonPathRoot,
-      apiKey: options.apiKey,
-      model: options.model,
-      baseUrl: options.baseUrl,
-      resume: options.resume,
-      session: this.sessionId,
-      demoMode: options.demoMode,
-      maxSteps: options.maxSteps,
-      maxHistoryTokens: options.maxHistoryTokens,
-      maxKeptFull: options.maxKeptFull,
+  /** 注册给 VS Code 的侧边栏 Webview View 创建入口。 */
+  resolveWebviewView(
+    webviewView: WebviewView,
+    _context: WebviewViewResolveContext,
+    _token: CancellationToken,
+  ): void {
+    this.disposeAgent();
+    this.view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this.htmlBasePath],
+    };
+    webviewView.webview.html = this.buildHtml(webviewView.webview);
+    this.wireMessages(webviewView.webview);
+    this.postConfig(webviewView.webview);
+
+    webviewView.onDidDispose(() => {
+      this.disposeAgent();
+      if (this.view === webviewView) {
+        this.view = undefined;
+      }
     });
   }
 
-  /** 打开 Webview 面板，spawn Python，接通双向通信。 */
-  open(): void {
-    const panel = window.createWebviewPanel(
-      "interviewAgent",
-      "Interview Agent",
-      // 在活动编辑器列打开，没有活动编辑器则用当前活动列
-      window.activeTextEditor?.viewColumn ?? ViewColumn.Active,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [this.htmlBasePath],
-      },
-    );
-
-    panel.webview.html = this.buildHtml(panel.webview);
-
-    this.wireMessages(panel.webview);
-    this.wireAgent(panel.webview);
-
-    panel.onDidDispose(() => {
-      this.agent.dispose();
-    });
-
-    // 启动 Python 子进程（内部自动发 init）
-    this.agent.start();
+  /** 聚焦面试视图；命令面板入口复用它，不再新开编辑器 Tab。 */
+  focus(): void {
+    void commands.executeCommand("workbench.view.extension.interview-agent");
+    void commands.executeCommand("interview.chatView.focus");
   }
 
-  // ──────────────────────────────────────────────
-  // Webview → Host：用户的 chat/stop
-  // ──────────────────────────────────────────────
+  /** 选中代码提问命令：聚焦面板并预填一条面试追问。 */
+  prefillSelectionQuestion(): void {
+    this.focus();
+    void this.view?.webview.postMessage({
+      type: "prefill",
+      text: "请针对我当前选中的这段代码进行面试追问。",
+    });
+  }
 
   private wireMessages(webview: Webview): void {
     webview.onDidReceiveMessage((msg: WebviewToHostMessage) => {
+      if (msg.type === "ready") {
+        this.postConfig(webview);
+        return;
+      }
       if (msg.type === "chat") {
+        if (!this.ensureAgentStarted(webview)) {
+          return;
+        }
         const attached = this.readSelection();
-        this.agent.send(
+        this.agent?.send(
           buildChat({
             session: this.sessionId,
             text: msg.text,
             attached_code: attached,
           }),
         );
-      } else if (msg.type === "stop") {
-        this.agent.send(buildStop(this.sessionId));
+        return;
+      }
+      if (msg.type === "stop") {
+        this.agent?.send(buildStop(this.sessionId));
+        return;
+      }
+      if (msg.type === "openSettings") {
+        void commands.executeCommand("workbench.action.openSettings", "interview");
+        return;
+      }
+      if (msg.type === "updateConfig") {
+        void this.handleConfigUpdate(webview, msg.config);
       }
     });
   }
 
-  /** 读当前编辑器选中的代码（设计第 5.3.3 节）。 */
+  /** 读当前编辑器选中的代码，作为下一轮面试追问的上下文。 */
   private readSelection(): { file: string; content: string } | undefined {
     const editor = window.activeTextEditor;
-    if (!editor) {
+    if (!editor || editor.selection.isEmpty) {
       return undefined;
     }
-    const selection = editor.selection;
-    if (selection.isEmpty) {
-      return undefined;
-    }
-    const text = editor.document.getText(selection);
+    const text = editor.document.getText(editor.selection);
     if (!text.trim()) {
       return undefined;
     }
@@ -145,26 +174,81 @@ export class InterviewPanel {
     };
   }
 
-  // ──────────────────────────────────────────────
-  // Python → Host → Webview：通知转发
-  // ──────────────────────────────────────────────
+  /**
+   * 保存模型配置并重启 Agent。
+   *
+   * 参数：
+   * - config：Webview 发来的模型名、Base URL、API Key 或 Demo Mode 更新
+   * 返回值：无；保存成功后把最新配置快照发回 Webview
+   */
+  private async handleConfigUpdate(
+    webview: Webview,
+    config: WebviewConfigUpdate,
+  ): Promise<void> {
+    try {
+      await this.saveConfig(config);
+      this.restartAgent();
+      this.postConfig(webview);
+      void webview.postMessage({ type: "configSaved" });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      void webview.postMessage({
+        method: "error",
+        params: { session: this.sessionId, message: `保存配置失败：${message}` },
+      });
+    }
+  }
+
+  /** 按当前配置懒启动 Python Agent；无 API Key 时阻止真实调用。 */
+  private ensureAgentStarted(webview: Webview): boolean {
+    if (this.agent) {
+      return true;
+    }
+
+    const options = this.buildOptions();
+    if (!options.demoMode && !options.apiKey) {
+      void webview.postMessage({
+        method: "error",
+        params: {
+          session: this.sessionId,
+          message: "还未配置 API Key。请填写 API Key，或开启 Demo Mode。",
+        },
+      });
+      return false;
+    }
+
+    this.agent = new AgentClient({
+      pythonPath: options.pythonPath,
+      scriptPath: options.scriptPath,
+      workspace: options.workspace,
+      pythonPathRoot: options.pythonPathRoot,
+      apiKey: options.apiKey || "demo",
+      model: options.model,
+      baseUrl: options.baseUrl,
+      resume: options.resume,
+      session: this.sessionId,
+      demoMode: options.demoMode,
+      maxSteps: options.maxSteps,
+      maxHistoryTokens: options.maxHistoryTokens,
+      maxKeptFull: options.maxKeptFull,
+    });
+    this.wireAgent(webview);
+    this.agent.start();
+    return true;
+  }
 
   private wireAgent(webview: Webview): void {
     const logger = getDebugChannel();
 
-    // 诊断日志：Python 的 stderr、spawn/exit 事件都写进 OutputChannel
-    // 这是排查"发消息没反应"的关键——能看到 Python 到底起没起来、报什么错
-    this.agent.onLog((message) => {
+    this.agent?.onLog((message) => {
       logger.appendLine(message);
     });
 
-    this.agent.onNotification((n) => {
-      // 透传给前端：通知原样 postMessage（method + params 结构不变）
+    this.agent?.onNotification((n) => {
       void webview.postMessage({ method: n.method, params: n.params });
     });
 
-    this.agent.onError((message) => {
-      // 错误同时记日志（诊断）和推给前端（红色气泡）
+    this.agent?.onError((message) => {
       logger.appendLine(`[error] ${message}`);
       void webview.postMessage({
         method: "error",
@@ -173,9 +257,26 @@ export class InterviewPanel {
     });
   }
 
-  // ──────────────────────────────────────────────
-  // HTML 构造 + CSP（设计第 5.5 节 webview 安全）
-  // ──────────────────────────────────────────────
+  private restartAgent(): void {
+    this.disposeAgent();
+    this.sessionId = makeSessionId();
+  }
+
+  private disposeAgent(): void {
+    this.agent?.dispose();
+    this.agent = null;
+  }
+
+  private postConfig(webview: Webview): void {
+    const options = this.buildOptions();
+    const config: WebviewConfigSnapshot = {
+      model: options.model,
+      baseUrl: options.baseUrl ?? "",
+      demoMode: Boolean(options.demoMode),
+      hasApiKey: Boolean(options.apiKey),
+    };
+    void webview.postMessage({ type: "config", config });
+  }
 
   private buildHtml(webview: Webview): string {
     const nonce = getNonce();
@@ -185,47 +286,23 @@ export class InterviewPanel {
     const scriptUri = webview.asWebviewUri(
       Uri.joinPath(this.htmlBasePath, "main.js"),
     );
+    const template = readFileSync(
+      Uri.joinPath(this.htmlBasePath, "index.html").fsPath,
+      "utf-8",
+    );
 
-    // 读 index.html 模板，替换占位符
-    // 注：fs 在 extension 上下文可用，这里用同步读取（启动期，可接受）
-    // 为避免引入额外依赖，HTML 模板内联在此构造（含 CSP 占位符替换）
-    return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Interview Agent</title>
-  <link rel="stylesheet" nonce="${nonce}" href="${stylesUri}" />
-</head>
-<body>
-  <div id="app">
-    <div id="messages" class="messages"></div>
-    <div class="composer">
-      <textarea id="input" class="composer__input" placeholder="和面试官聊聊你的项目…（Enter 发送，Shift+Enter 换行）" rows="4"></textarea>
-      <button id="send" class="composer__send" title="发送" aria-label="发送">↑</button>
-      <button id="stop" class="composer__stop" title="停止" aria-label="停止" disabled>■</button>
-    </div>
-  </div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
-</body>
-</html>`;
+    return template
+      .replaceAll("${nonce}", nonce)
+      .replaceAll("${cspSource}", webview.cspSource)
+      .replaceAll("${stylesUri}", String(stylesUri))
+      .replaceAll("${scriptUri}", String(scriptUri));
   }
 }
 
-// ──────────────────────────────────────────────
-// 辅助
-// ──────────────────────────────────────────────
-
-/** Webview 发给 Host 的消息。 */
-type WebviewToHostMessage =
-  | { type: "chat"; text: string }
-  | { type: "stop" };
-
-/** 生成 CSP nonce（16 字节十六进制）。 */
 function getNonce(): string {
   return randomBytes(16).toString("base64");
 }
 
-// 保留 WebviewView 类型引用，便于未来改成侧边栏视图（设计第 5.2 节）
-export type { WebviewView };
+function makeSessionId(): string {
+  return `vscode-${Date.now()}`;
+}
