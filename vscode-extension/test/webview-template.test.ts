@@ -13,8 +13,8 @@ describe("Webview 面试入口模板", () => {
     expect(html).not.toContain('id="stop"');
     expect(script).toContain('vscode.postMessage({ type: "stop" })');
     expect(styles).toContain(".composer__action");
-    expect(styles).toContain("right: 38px");
-    expect(styles).toContain("bottom: clamp(26px, 4vh, 38px)");
+    expect(styles).toContain("right: 20px");
+    expect(styles).toContain("bottom: 20px");
   });
 
   it("首屏包含简历上传和当前项目自动读取信息", () => {
@@ -82,18 +82,34 @@ describe("Webview 面试入口模板", () => {
   });
 
   it("对话区滚动，输入框固定在面板最底部", () => {
-    expect(html).toContain('class="chat"');
-    // 纵向 flex 骨架：顶栏/配置区按内容排布，聊天区吃剩余高度
+    expect(html).toContain('id="chat"');
+    expect(html).toContain('class="chat is-hidden"');
+    // 纵向 flex 骨架：设置页/对话页各自占满剩余区域
     expect(styles).toContain("flex-direction: column");
+    expect(styles).toContain(".setup");
     expect(styles).toContain(".chat");
     expect(styles).toContain(".messages");
     expect(styles).toContain(".composer");
-    // 消息流占满剩余空间（可滚动），输入框不参与压缩（钉在底部）
+    // 设置页和消息流占满剩余空间（可滚动），输入框不参与压缩（钉在底部）
     expect(styles).toContain("flex: 1 1 auto");
     expect(styles).toContain("flex: 0 0 auto");
     expect(styles).toContain("overflow-y: auto");
-    expect(styles).toContain("max-height: 38vh");
-    expect(styles).toContain("min-height: clamp(96px, 16vh, 132px)");
+    expect(styles).toContain("min-height: 0");
+    expect(styles).not.toContain("max-height: 38vh");
+    expect(styles).toContain("min-height: 92px");
+    expect(styles).toContain("width: 32px");
+    expect(styles).toContain("height: 32px");
+  });
+
+  it("初始进入设置页，开始/继续会话进入对话页，新建会话回设置页", () => {
+    expect(script).toContain('const chatEl = document.getElementById("chat")');
+    expect(script).toContain("function showSetupPage");
+    expect(script).toContain("function showChatPage");
+    expect(script).toContain('chatEl.classList.add("is-hidden")');
+    expect(script).toContain('chatEl.classList.remove("is-hidden")');
+    expect(script).toContain("showChatPage();\n    sendChat(text");
+    expect(script).toContain('if (msg.type === "sessionNew")');
+    expect(script).toContain('showSetupPage("已新建会话")');
   });
 
   it("顶栏为品牌标识布局（logo + 标题 + 副标题）", () => {

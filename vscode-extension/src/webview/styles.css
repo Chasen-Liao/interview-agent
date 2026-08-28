@@ -32,9 +32,7 @@ button:disabled {
 }
 
 /* ──────────────────────────────────────────────
-   骨架：flex 纵向布局。
-   顶栏 / 历史 / 配置区在上方按内容伸展，
-   聊天区吃掉剩余高度，输入框永远钉在最底部。
+   骨架：顶栏固定，设置页/对话页各自占满剩余区域。
    ────────────────────────────────────────────── */
 #app {
   display: flex;
@@ -54,7 +52,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 16px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
 }
 
@@ -69,13 +67,13 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
-  border-radius: 8px;
-  font-size: 12px;
+  border-radius: 6px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.5px;
 }
@@ -89,7 +87,7 @@ button:disabled {
 
 .topbar__title {
   overflow: hidden;
-  font-size: 14px;
+  font-size: var(--vscode-font-size, 13px);
   font-weight: 700;
   letter-spacing: 0.2px;
   text-overflow: ellipsis;
@@ -111,9 +109,9 @@ button:disabled {
 }
 
 .icon-button {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -131,23 +129,28 @@ button:disabled {
    ────────────────────────────────────────────── */
 .setup,
 .history {
-  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 12px 16px 14px;
-  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
+  padding: 12px;
 }
 
 .setup.is-collapsed,
 .history.is-collapsed,
+.chat.is-hidden,
 .dependency.is-hidden {
   display: none;
 }
 
 .setup {
-  max-height: 38vh;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+}
+
+.history {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
 }
 
 /* ──────────────────────────────────────────────
@@ -158,7 +161,7 @@ button:disabled {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  padding: 10px 12px 12px;
+  padding: 10px;
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, transparent));
   border-radius: 8px;
 }
@@ -174,13 +177,13 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
   border-radius: 50%;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
 }
 
@@ -195,7 +198,7 @@ button:disabled {
   margin-left: auto;
   overflow: hidden;
   color: var(--vscode-descriptionForeground);
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -220,7 +223,7 @@ button:disabled {
 .field__textarea,
 .composer__input {
   resize: none;
-  padding: 9px 12px;
+  padding: 8px 10px;
   line-height: 1.45;
 }
 
@@ -230,7 +233,7 @@ button:disabled {
 }
 
 .field__textarea {
-  height: clamp(92px, 16vh, 150px);
+  height: clamp(110px, 20vh, 180px);
 }
 
 .field__textarea:focus,
@@ -250,15 +253,15 @@ button:disabled {
 
 .primary-button,
 .secondary-button {
-  min-height: 36px;
-  padding: 7px 12px;
+  min-height: 30px;
+  padding: 5px 10px;
   white-space: nowrap;
 }
 
 .primary-button {
-  min-height: 38px;
+  min-height: 32px;
   font-weight: 600;
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 .secondary-button {
@@ -385,12 +388,12 @@ button:disabled {
    ────────────────────────────────────────────── */
 .resume-upload {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
   align-items: center;
   width: 100%;
-  min-height: clamp(64px, 10vh, 86px);
-  padding: clamp(10px, 1.8vh, 16px) 14px;
+  min-height: 64px;
+  padding: 10px 12px;
   color: var(--vscode-foreground);
   text-align: left;
   background: var(--vscode-input-background);
@@ -410,12 +413,12 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: clamp(42px, 7vh, 58px);
-  height: clamp(42px, 7vh, 58px);
+  width: 36px;
+  height: 36px;
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
-  border-radius: 8px;
-  font-size: 22px;
+  border-radius: 6px;
+  font-size: 20px;
   line-height: 1;
 }
 
@@ -448,7 +451,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-top: 1px solid var(--vscode-sideBarSectionHeader-border);
   background: var(--vscode-sideBar-background, var(--vscode-editor-background));
 }
 
@@ -458,7 +460,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 16px 16px 8px;
+  padding: 12px 12px 8px;
   overflow-y: auto;
 }
 
@@ -610,28 +612,28 @@ button:disabled {
 .composer {
   position: relative;
   flex: 0 0 auto;
-  min-height: clamp(96px, 16vh, 132px);
-  padding: 8px 16px clamp(12px, 2vh, 20px);
+  min-height: 92px;
+  padding: 8px 12px 12px;
   background: inherit;
 }
 
 .composer__input {
-  height: clamp(76px, 12vh, 110px);
-  min-height: clamp(76px, 12vh, 110px);
-  padding-right: 62px;
-  padding-bottom: 48px;
+  height: 72px;
+  min-height: 72px;
+  padding-right: 48px;
+  padding-bottom: 36px;
   overflow-y: auto;
 }
 
 .composer__action {
   position: absolute;
-  right: 38px;
-  bottom: clamp(26px, 4vh, 38px);
+  right: 20px;
+  bottom: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   font-size: var(--vscode-font-size, 13px);
   line-height: 1;

@@ -20,6 +20,7 @@
   const workspaceInfoEl = document.getElementById("workspaceInfo");
   const startInterviewBtn = document.getElementById("startInterview");
   const setupEl = document.getElementById("setup");
+  const chatEl = document.getElementById("chat");
   const historyPanelEl = document.getElementById("historyPanel");
   const sessionListEl = document.getElementById("sessionList");
   const newSessionBtn = document.getElementById("newSession");
@@ -64,11 +65,12 @@
   function startInterview() {
     const jd = jdEl.value.trim();
     if (!jd) {
-      appendBubble("error", "出错了", "请先填写岗位 JD。");
+      setStatus("请先填写岗位 JD。");
+      jdEl.focus();
       return;
     }
     if (!workspaceState.hasWorkspace) {
-      appendBubble("error", "出错了", "请先打开要面试的目标项目文件夹。");
+      setStatus("请先打开要面试的目标项目文件夹。");
       return;
     }
 
@@ -94,7 +96,7 @@
     ].join("\n");
 
     interviewStarted = true;
-    setupEl.classList.add("is-collapsed");
+    showChatPage();
     sendChat(text, "已提交岗位 JD 和简历，开始面试。");
   }
 
@@ -161,8 +163,7 @@
     if (msg.type === "sessionNew") {
       clearMessages();
       interviewStarted = false;
-      setupEl.classList.remove("is-collapsed");
-      setStatus("已新建会话");
+      showSetupPage("已新建会话");
       jdEl.focus();
       return;
     }
@@ -176,7 +177,7 @@
         );
       });
       interviewStarted = true;
-      setupEl.classList.add("is-collapsed");
+      showChatPage();
       setStatus("已继续历史会话");
       return;
     }
@@ -296,9 +297,6 @@
   function onError(params) {
     stopping = false;
     appendBubble("error", "出错了", params.message || "未知错误");
-    if (!currentInterviewerBubble) {
-      setupEl.classList.remove("is-collapsed");
-    }
     if (currentInterviewerBubble) {
       currentInterviewerBubble.classList.remove("cursor");
       currentInterviewerBubble = null;
@@ -483,7 +481,7 @@
   function showDependencyStatus(status) {
     dependencyPanelEl.classList.toggle("is-hidden", !status.message);
     if (status.message) {
-      setupEl.classList.remove("is-collapsed");
+      showSetupPage();
     }
     dependencyMessageEl.textContent = status.message || "";
     dependencyCommandEl.textContent = status.command || "";
@@ -555,6 +553,21 @@
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function showSetupPage(status) {
+    setupEl.classList.remove("is-collapsed");
+    chatEl.classList.add("is-hidden");
+    if (status) {
+      setStatus(status);
+    }
+  }
+
+  function showChatPage() {
+    setupEl.classList.add("is-collapsed");
+    chatEl.classList.remove("is-hidden");
+    inputEl.focus();
+    scrollToBottom();
   }
 
   historyToggleBtn.addEventListener("click", () => {
