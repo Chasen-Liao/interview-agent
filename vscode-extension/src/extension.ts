@@ -75,6 +75,7 @@ function buildPanelOptions(context: ExtensionContext): PanelOptions {
       .get<string>("defaultInterpreterPath", ""),
     scriptPath: path.join(agentRoot, "agent", "main.py"),
     requirementsPath: path.join(agentRoot, "requirements-agent.txt"),
+    requirementsOcrPath: path.join(agentRoot, "requirements-ocr.txt"),
     workspace: intervieweeProject?.uri.fsPath ?? "",
     workspaceName: intervieweeProject?.name ?? "",
     hasWorkspace: Boolean(intervieweeProject),
@@ -130,6 +131,11 @@ export function activate(context: ExtensionContext): void {
       provider.prefillSelectionQuestion();
     },
   );
+  const captureDroppedResumeTab = window.tabGroups.onDidChangeTabs((event) => {
+    for (const tab of event.opened) {
+      provider.captureOpenedResumeTab(tab);
+    }
+  });
 
   context.subscriptions.push(
     window.registerWebviewViewProvider("interview.chatView", provider, {
@@ -137,6 +143,7 @@ export function activate(context: ExtensionContext): void {
     }),
     startCmd,
     askCmd,
+    captureDroppedResumeTab,
   );
 }
 

@@ -10,15 +10,19 @@
 import { randomBytes } from "crypto";
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "fs";
+import { tmpdir } from "os";
 import { basename, extname, join } from "path";
 import {
   CancellationToken,
   OutputChannel,
+  type Tab,
   Uri,
   Webview,
   WebviewView,
@@ -53,6 +57,8 @@ export interface PanelOptions {
   pythonPathRoot: string;
   /** 打包进插件的 Python 依赖清单。 */
   requirementsPath: string;
+  /** 扫描版 PDF OCR 的可选依赖清单。 */
+  requirementsOcrPath: string;
   apiKey: string;
   model: string;
   baseUrl?: string;
@@ -88,8 +94,15 @@ type WebviewToHostMessage =
   | { type: "chat"; text: string }
   | { type: "stop" }
   | { type: "pickResume" }
+  | { type: "armResumeFileDrop" }
+  | { type: "resumeCaptureState"; enabled: boolean }
+  | { type: "pickResumePath"; path: string }
+  | { type: "pickResumeUpload"; fileName: string; dataBase64: string }
   | { type: "installDependencies" }
+  | { type: "installOcrDependencies" }
   | { type: "checkDependencies" }
+  | { type: "testModelConnection" }
+  | { type: "exportReport" }
   | { type: "listSessions" }
   | { type: "newSession" }
   | { type: "resumeSession"; session: string }
@@ -118,10 +131,35 @@ interface DisplayMessage {
 
 const RESUME_MAX_CHARS = 80_000;
 
+interface ReportInput {
+  sessionId: string;
+  title: string;
+  workspaceName: string;
+  workspacePath: string;
+  createdAt: Date;
+  messages: DisplayMessage[];
+}
+
+interface ModelTestInput {
+  pythonPath: string;
+  pythonPathRoot: string;
+  apiKey: string;
+  model: string;
+  baseUrl?: string;
+}
+
+interface ModelTestResult {
+  ok: boolean;
+  kind: string;
+  message: string;
+}
+
 export class InterviewViewProvider implements WebviewViewProvider {
   private view: WebviewView | undefined;
   private agent: AgentClient | null = null;
   private sessionId = makeSessionId();
+  private resumeDropArmedUntil = 0;
+  private resumeCaptureReady = true;
 
   constructor(
     private readonly htmlBasePath: Uri,
@@ -139,6 +177,7 @@ export class InterviewViewProvider implements WebviewViewProvider {
     this.view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
+      enableForms: true,
       localResourceRoots: [this.htmlBasePath],
     };
     webviewView.webview.html = this.buildHtml(webviewView.webview);
@@ -158,6 +197,24 @@ export class InterviewViewProvider implements WebviewViewProvider {
   focus(): void {
     void commands.executeCommand("workbench.view.extension.interview-agent");
     void commands.executeCommand("interview.chatView.focus");
+  }
+
+  /** 系统文件拖入 Webview 被 VS Code 打开成 Tab 时，短时间内兜底接管为简历上传。 */
+  captureOpenedResumeTab(tab: Tab): void {
+    const canCapture = this.resumeCaptureReady || Date.now() <= this.resumeDropArmedUntil;
+    if (!this.view?.visible || !canCapture) {
+      return;
+    }
+    const filePath = getResumeFilePathFromTabInput(tab.input);
+    if (!filePath) {
+      return;
+    }
+    this.resumeDropArmedUntil = 0;
+    void this.parsePickedResume(this.view.webview, filePath);
+  }
+
+  private armResumeFileDrop(): void {
+    this.resumeDropArmedUntil = Date.now() + 10_000;
   }
 
   /** 选中代码提问命令：聚焦面板并预填一条面试追问。 */
@@ -197,12 +254,42 @@ export class InterviewViewProvider implements WebviewViewProvider {
         void this.pickResume(webview);
         return;
       }
+      if (msg.type === "armResumeFileDrop") {
+        this.armResumeFileDrop();
+        return;
+      }
+      if (msg.type === "resumeCaptureState") {
+        this.resumeCaptureReady = msg.enabled;
+        return;
+      }
+      if (msg.type === "pickResumePath") {
+        this.resumeDropArmedUntil = 0;
+        void this.parsePickedResume(webview, msg.path);
+        return;
+      }
+      if (msg.type === "pickResumeUpload") {
+        this.resumeDropArmedUntil = 0;
+        void this.parseUploadedResume(webview, msg.fileName, msg.dataBase64);
+        return;
+      }
       if (msg.type === "installDependencies") {
         this.installDependencies(webview);
         return;
       }
+      if (msg.type === "installOcrDependencies") {
+        this.installOcrDependencies(webview);
+        return;
+      }
       if (msg.type === "checkDependencies") {
         this.checkDependencies(webview);
+        return;
+      }
+      if (msg.type === "testModelConnection") {
+        void this.testModelConnection(webview);
+        return;
+      }
+      if (msg.type === "exportReport") {
+        void this.exportReport(webview);
         return;
       }
       if (msg.type === "listSessions") {
@@ -247,16 +334,47 @@ export class InterviewViewProvider implements WebviewViewProvider {
       return;
     }
 
+    await this.parsePickedResume(webview, file.fsPath);
+  }
+
+  /** 读取用户选择或拖入的简历附件。 */
+  private async parsePickedResume(webview: Webview, filePath: string): Promise<void> {
+    await this.parseResumePath(webview, filePath);
+  }
+
+  /** 读取 Webview 拖拽传来的简历内容，写入临时文件后复用原解析流程。 */
+  private async parseUploadedResume(
+    webview: Webview,
+    fileName: string,
+    dataBase64: string,
+  ): Promise<void> {
+    const safeName = safeUploadedFileName(fileName);
+    const dir = join(tmpdir(), "interview-agent-resume-drop");
+    const filePath = join(dir, `${Date.now()}-${safeName}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(filePath, Buffer.from(stripDataUrlPrefix(dataBase64), "base64"));
+    try {
+      await this.parseResumePath(webview, filePath, safeName);
+    } finally {
+      rmSync(filePath, { force: true });
+    }
+  }
+
+  private async parseResumePath(
+    webview: Webview,
+    filePath: string,
+    displayFileName?: string,
+  ): Promise<void> {
+    const options = this.buildOptions();
+    const pythonLookup = locatePython({
+      configuredPath: options.pythonPath,
+      workspacePath: options.workspace,
+      vscodePythonPath: options.vscodePythonPath,
+      requireOpenAI: false,
+    });
     try {
       void webview.postMessage({ type: "resumeStatus", message: "正在读取简历..." });
-      const options = this.buildOptions();
-      const pythonLookup = locatePython({
-        configuredPath: options.pythonPath,
-        workspacePath: options.workspace,
-        vscodePythonPath: options.vscodePythonPath,
-        requireOpenAI: false,
-      });
-      const resume = await parseResumeFile(file.fsPath, {
+      const resume = await parseResumeFile(filePath, {
         ocr: (pdfPath) => runResumeOcr({
           filePath: pdfPath,
           pythonPath: pythonLookup.pythonPath,
@@ -267,12 +385,19 @@ export class InterviewViewProvider implements WebviewViewProvider {
           void webview.postMessage({ type: "resumeStatus", message });
         },
       });
+      if (displayFileName) {
+        resume.fileName = displayFileName;
+      }
       void webview.postMessage({
         type: "resumePicked",
         resume,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      if (isOcrDependencyError(message)) {
+        this.postOcrDependencyError(webview, message, pythonLookup.pythonPath);
+        return;
+      }
       void webview.postMessage({
         type: "resumeError",
         message: `读取简历失败：${message}`,
@@ -300,6 +425,34 @@ export class InterviewViewProvider implements WebviewViewProvider {
       message: "已在 Terminal 启动依赖安装。安装完成后点击重新检测或重新开始面试。",
       command,
       canInstall: true,
+    });
+  }
+
+  /** 在 VS Code Terminal 中显式安装扫描版 PDF OCR 可选依赖。 */
+  private installOcrDependencies(webview: Webview): void {
+    const options = this.buildOptions();
+    const pythonLookup = locatePython({
+      configuredPath: options.pythonPath,
+      workspacePath: options.workspace,
+      vscodePythonPath: options.vscodePythonPath,
+      requireOpenAI: false,
+    });
+    const command = buildOcrInstallCommand(
+      pythonLookup.pythonPath,
+      options.requirementsOcrPath,
+    );
+    const logger = getDebugChannel();
+    logger.appendLine(`[ocr-deps] ${command}`);
+    const terminal = window.createTerminal("Interview Agent OCR 依赖安装");
+    terminal.show();
+    terminal.sendText(command);
+    void webview.postMessage({
+      type: "dependencyStatus",
+      message: "已在 Terminal 启动 OCR 依赖安装。安装完成后重新上传扫描版 PDF。",
+      command,
+      canInstall: true,
+      installType: "ocr",
+      buttonLabel: "安装 OCR 依赖",
     });
   }
 
@@ -360,6 +513,118 @@ export class InterviewViewProvider implements WebviewViewProvider {
       void webview.postMessage({ type: "sessionNew", session: this.sessionId });
     }
     this.postSessions(webview);
+  }
+
+  /** 测试当前真实模型配置；只发一条极短请求，不写入面试会话。 */
+  private async testModelConnection(webview: Webview): Promise<void> {
+    const options = this.buildOptions();
+    if (options.demoMode) {
+      void webview.postMessage({
+        type: "modelTestResult",
+        ok: true,
+        message: "Demo Mode 使用内置 FakeLLM，无需测试真实模型连接。",
+      });
+      return;
+    }
+    if (!options.apiKey) {
+      void webview.postMessage({
+        type: "modelTestResult",
+        ok: false,
+        message: "还未配置 API Key。请填写 interview.apiKey，或开启 Demo Mode。",
+      });
+      return;
+    }
+    if (!options.model.trim()) {
+      void webview.postMessage({
+        type: "modelTestResult",
+        ok: false,
+        message: "还未配置模型名。请填写 interview.model 后再测试连接。",
+      });
+      return;
+    }
+
+    const pythonLookup = locatePython({
+      configuredPath: options.pythonPath,
+      workspacePath: options.workspace,
+      vscodePythonPath: options.vscodePythonPath,
+      requireOpenAI: true,
+    });
+    if (pythonLookup.error) {
+      this.postDependencyError(webview, pythonLookup.error, pythonLookup.pythonPath);
+      void webview.postMessage({
+        type: "modelTestResult",
+        ok: false,
+        message: pythonLookup.error,
+      });
+      return;
+    }
+
+    void webview.postMessage({
+      type: "modelTestStatus",
+      message: "正在测试模型连接...",
+    });
+    try {
+      const result = await runModelConnectionTest({
+        pythonPath: pythonLookup.pythonPath,
+        pythonPathRoot: options.pythonPathRoot,
+        apiKey: options.apiKey,
+        model: options.model,
+        baseUrl: options.baseUrl,
+      });
+      void webview.postMessage({ type: "modelTestResult", ...result });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      void webview.postMessage({
+        type: "modelTestResult",
+        ok: false,
+        message,
+      });
+    }
+  }
+
+  /** 将当前会话导出为工作区本地 Markdown 报告。 */
+  private async exportReport(webview: Webview): Promise<void> {
+    const options = this.buildOptions();
+    if (!options.hasWorkspace || !options.workspace) {
+      void webview.postMessage({
+        type: "reportError",
+        message: "请先打开目标项目文件夹，再导出面试报告。",
+      });
+      return;
+    }
+
+    const messages = loadSessionMessages(options.workspace, this.sessionId);
+    if (!canExportReport(messages)) {
+      void webview.postMessage({
+        type: "reportError",
+        message: "当前会话还没有可导出的面试内容。",
+      });
+      return;
+    }
+
+    const title = makeSessionTitle(messages, this.sessionId);
+    const reportsDir = join(options.workspace, ".interview-agent", "reports");
+    const fileName = `${formatReportTimestamp(new Date())}-${sanitizeReportFileName(title)}.md`;
+    const filePath = join(reportsDir, fileName);
+    mkdirSync(reportsDir, { recursive: true });
+    writeFileSync(
+      filePath,
+      generateMarkdownReport({
+        sessionId: this.sessionId,
+        title,
+        workspaceName: options.workspaceName,
+        workspacePath: options.workspace,
+        createdAt: new Date(),
+        messages,
+      }),
+      "utf-8",
+    );
+    await commands.executeCommand("vscode.open", Uri.file(filePath));
+    void webview.postMessage({
+      type: "reportExported",
+      message: `报告已导出：${filePath}`,
+      filePath,
+    });
   }
 
   /** 读当前编辑器选中的代码，作为下一轮面试追问的上下文。 */
@@ -556,6 +821,30 @@ export class InterviewViewProvider implements WebviewViewProvider {
     });
   }
 
+  private postOcrDependencyError(
+    webview: Webview,
+    message: string,
+    pythonPath?: string,
+  ): void {
+    const options = this.buildOptions();
+    const command = buildOcrInstallCommand(
+      pythonPath || options.pythonPath,
+      options.requirementsOcrPath,
+    );
+    void webview.postMessage({
+      type: "dependencyStatus",
+      message,
+      command,
+      canInstall: true,
+      installType: "ocr",
+      buttonLabel: "安装 OCR 依赖",
+    });
+    void webview.postMessage({
+      type: "resumeError",
+      message: `读取简历失败：${message}`,
+    });
+  }
+
   private buildHtml(webview: Webview): string {
     const nonce = getNonce();
     const stylesUri = webview.asWebviewUri(
@@ -612,7 +901,12 @@ export async function parseResumeFile(
       const result = await pdfParse(readFileSync(filePath));
       raw = result.text;
     }
-    if (!raw.trim() && options.ocr) {
+    if (!raw.trim()) {
+      if (!options.ocr) {
+        throw new Error(
+          "扫描版 PDF 需要 OCR 依赖。请安装 OCR 依赖，或改用文本粘贴。",
+        );
+      }
       options.onStatus?.("正在识别扫描版 PDF...");
       raw = await options.ocr(filePath);
     }
@@ -642,6 +936,13 @@ export function buildInstallCommand(pythonPath: string, requirementsPath: string
     return `& ${quotePowerShell(pythonPath)} -m pip install -r ${quotePowerShell(requirementsPath)}`;
   }
   return `${quoteShell(pythonPath)} -m pip install -r ${quoteShell(requirementsPath)}`;
+}
+
+export function buildOcrInstallCommand(
+  pythonPath: string,
+  requirementsOcrPath: string,
+): string {
+  return buildInstallCommand(pythonPath, requirementsOcrPath);
 }
 
 function quotePowerShell(value: string): string {
@@ -676,7 +977,7 @@ async function runResumeOcr(input: ResumeOcrInput): Promise<string> {
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(
-            `OCR 识别失败。请先安装 Agent 依赖，或改用文本粘贴。${stderr ? `\n${stderr.trim()}` : ""}`,
+            `OCR 识别失败。请先安装 OCR 依赖，或改用文本粘贴。${stderr ? `\n${stderr.trim()}` : ""}`,
           ));
           return;
         }
@@ -689,6 +990,80 @@ async function runResumeOcr(input: ResumeOcrInput): Promise<string> {
       },
     );
   });
+}
+
+async function runModelConnectionTest(input: ModelTestInput): Promise<ModelTestResult> {
+  const { execFile } = await import("child_process");
+  const code = [
+    "import json, os, sys",
+    "from agent.llm_client import test_model_connection",
+    "result = test_model_connection(api_key=os.environ.get('INTERVIEW_TEST_API_KEY', ''), model=sys.argv[1], base_url=sys.argv[2] or None)",
+    "print(json.dumps(result, ensure_ascii=False))",
+  ].join("; ");
+
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env };
+    const existing = env.PYTHONPATH ?? "";
+    env.PYTHONPATH = existing
+      ? `${input.pythonPathRoot}${process.platform === "win32" ? ";" : ":"}${existing}`
+      : input.pythonPathRoot;
+    env.PYTHONIOENCODING = "utf-8";
+    env.INTERVIEW_TEST_API_KEY = input.apiKey;
+
+    execFile(
+      input.pythonPath,
+      ["-c", code, input.model, input.baseUrl || ""],
+      {
+        encoding: "utf-8",
+        env,
+        timeout: 30_000,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(
+            `模型连接测试失败。请检查 interview.baseUrl、interview.model 和网络。${stderr ? `\n${stderr.trim()}` : ""}`,
+          ));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout.trim()) as ModelTestResult);
+        } catch {
+          reject(new Error("模型连接测试返回了无法解析的结果。"));
+        }
+      },
+    );
+  });
+}
+
+function isOcrDependencyError(message: string): boolean {
+  return message.includes("OCR 依赖") || message.includes("rapidocr-onnxruntime");
+}
+
+export function getResumeFilePathFromTabInput(input: unknown): string {
+  const uri = (input as { uri?: Uri } | undefined)?.uri;
+  if (uri?.scheme !== "file" || !isSupportedResumeFilePath(uri.fsPath)) {
+    return "";
+  }
+  return uri.fsPath;
+}
+
+function isSupportedResumeFilePath(filePath: string): boolean {
+  return [".pdf", ".docx", ".txt", ".md", ".markdown"].includes(
+    extname(filePath).toLowerCase(),
+  );
+}
+
+function safeUploadedFileName(fileName: string): string {
+  return basename(fileName || "resume.txt")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-") || "resume.txt";
+}
+
+function stripDataUrlPrefix(value: string): string {
+  const comma = value.indexOf(",");
+  return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
 }
 
 function sessionsDir(workspacePath: string): string {
@@ -774,15 +1149,207 @@ export function makeSessionTitle(messages: DisplayMessage[], fallback: string): 
   if (!content) {
     return fallback;
   }
-  // 首条消息是「开始面试」的组装文本，固定以「我们开始一场技术面试。」开头，
-  // 直接取第一行会让所有会话同名。优先提取岗位 JD 的第一行，标题才有辨识度。
-  const jdMatch = content.match(/岗位 JD：\r?\n(.+)/);
-  const jdLine = jdMatch?.[1]?.trim();
-  if (jdLine) {
-    return jdLine.slice(0, 32);
+  const jd = extractSection(content, "岗位 JD", ["简历", "当前项目", "项目路径"]);
+  const project = extractProjectName(content);
+  const techs = extractTechKeywords(content);
+  const candidates = [
+    extractJobTitle(jd),
+    firstMeaningfulLine(jd),
+    buildProjectTechTitle(project, techs),
+    project,
+    firstMeaningfulLine(content),
+  ];
+  for (const candidate of candidates) {
+    const title = normalizeTitle(candidate);
+    if (title) {
+      return title.slice(0, 32);
+    }
   }
-  const firstLine = content.split(/\r?\n/).find((line) => line.trim()) || content;
-  return firstLine.slice(0, 32);
+  return fallback;
+}
+
+export function canExportReport(messages: DisplayMessage[]): boolean {
+  return messages.some((message) => message.role === "user" && message.content.trim());
+}
+
+export function sanitizeReportFileName(title: string): string {
+  return normalizeTitle(title)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60) || "interview-report";
+}
+
+export function generateMarkdownReport(input: ReportInput): string {
+  const firstUser = input.messages.find((message) => message.role === "user")?.content || "";
+  const jd = extractSection(firstUser, "岗位 JD", ["简历", "当前项目", "项目路径"]);
+  const resume = extractSection(firstUser, "简历", ["当前项目", "项目路径"]);
+  const project = extractProjectName(firstUser) || input.workspaceName || "未命名项目";
+  const allText = input.messages.map((message) => message.content).join("\n");
+  const techs = extractTechKeywords(allText);
+  const userAnswers = input.messages.filter((message) => message.role === "user").slice(1);
+  const assistantQuestions = input.messages.filter((message) => message.role === "assistant");
+
+  return [
+    `# ${input.title}`,
+    "",
+    "## 基本信息",
+    "",
+    `- 导出时间：${input.createdAt.toLocaleString()}`,
+    `- 会话 ID：${input.sessionId}`,
+    `- 当前项目：${project}`,
+    `- 项目路径：${input.workspacePath}`,
+    "",
+    "## JD 摘要",
+    "",
+    formatBlock(jd || "未提供明确 JD。"),
+    "",
+    "## 项目摘要",
+    "",
+    `- 项目：${project}`,
+    `- 识别到的技术点：${techs.length ? techs.join("、") : "待根据后续回答补充"}`,
+    resume ? `- 简历摘要：${truncate(resume, 300)}` : "- 简历摘要：未提供或仅在附件中提交。",
+    "",
+    "## 考察技术点",
+    "",
+    formatBulletList(techs.length ? techs : ["项目结构", "技术选型", "实现权衡"]),
+    "",
+    "## 回答表现",
+    "",
+    userAnswers.length
+      ? formatBulletList(userAnswers.slice(-5).map((message) => truncate(message.content, 180)))
+      : "- 本次会话还没有正式回答轮次。",
+    "",
+    "## 薄弱点",
+    "",
+    formatBulletList(buildWeaknesses(userAnswers, techs)),
+    "",
+    "## 复习建议",
+    "",
+    formatBulletList(buildReviewSuggestions(techs)),
+    "",
+    "## 对话摘要",
+    "",
+    formatBulletList(
+      assistantQuestions.slice(-5).map((message) => `面试官追问：${truncate(message.content, 180)}`),
+    ),
+    "",
+  ].join("\n");
+}
+
+function extractSection(content: string, label: string, stopLabels: string[]): string {
+  const start = content.match(new RegExp(`${escapeRegex(label)}：\\s*`, "m"));
+  if (!start || start.index === undefined) {
+    return "";
+  }
+  const from = start.index + start[0].length;
+  const rest = content.slice(from);
+  const stopPattern = new RegExp(`\\n(?:${stopLabels.map(escapeRegex).join("|")})：`, "m");
+  const stop = rest.search(stopPattern);
+  return (stop >= 0 ? rest.slice(0, stop) : rest).trim();
+}
+
+function extractJobTitle(jd: string): string {
+  for (const line of jd.split(/\r?\n/).slice(0, 8)) {
+    const cleaned = normalizeTitle(line.replace(/^[-*+\d.)\s]+/, ""));
+    if (!cleaned) {
+      continue;
+    }
+    const labeled = cleaned.match(/^(?:岗位名称|岗位|职位名称|职位|招聘岗位)[:：]\s*(.+)$/);
+    if (labeled?.[1]) {
+      return labeled[1];
+    }
+    if (/(工程师|开发|实习|算法|后端|前端|全栈|测试|运维|Agent|AI|LLM)/i.test(cleaned)) {
+      return cleaned;
+    }
+  }
+  return "";
+}
+
+function extractProjectName(content: string): string {
+  const match = content.match(/当前项目：([^\r\n]+)/);
+  return match?.[1]?.trim() || "";
+}
+
+function extractTechKeywords(content: string): string[] {
+  const techs = [
+    "Python", "TypeScript", "JavaScript", "Java", "Spring", "Vue", "React",
+    "Node", "FastAPI", "Django", "Flask", "Redis", "MySQL", "PostgreSQL",
+    "Docker", "Kubernetes", "LangChain", "RAG", "LLM", "OCR",
+  ];
+  const lower = content.toLowerCase();
+  return techs.filter((tech) => lower.includes(tech.toLowerCase()));
+}
+
+function buildProjectTechTitle(project: string, techs: string[]): string {
+  if (!project || !techs.length) {
+    return "";
+  }
+  const full = `${project} · ${techs.slice(0, 2).join("/")}`;
+  if (full.length <= 32) {
+    return full;
+  }
+  return `${project} · ${techs[0]}`;
+}
+
+function firstMeaningfulLine(content: string): string {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && line !== "我们开始一场技术面试。") || "";
+}
+
+function normalizeTitle(value: string | undefined): string {
+  return (value || "").replace(/\s+/g, " ").trim();
+}
+
+function formatBlock(value: string): string {
+  return truncate(value, 600)
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
+function formatBulletList(items: string[]): string {
+  return items.map((item) => `- ${item}`).join("\n");
+}
+
+function buildWeaknesses(userAnswers: DisplayMessage[], techs: string[]): string[] {
+  if (userAnswers.length < 2) {
+    return ["回答轮次偏少，建议继续补充项目背景、关键实现和取舍依据。"];
+  }
+  return [
+    "逐项复盘回答中没有展开的原理、边界条件和失败场景。",
+    techs.length
+      ? `优先补强 ${techs.slice(0, 3).join("、")} 的底层机制和项目落地细节。`
+      : "补充项目技术栈、核心模块和关键难点的可验证细节。",
+  ];
+}
+
+function buildReviewSuggestions(techs: string[]): string[] {
+  const focus = techs.slice(0, 4);
+  return [
+    focus.length
+      ? `围绕 ${focus.join("、")} 各准备一个“原理 - 项目用法 - 踩坑 - 优化”的回答。`
+      : "先整理项目的核心技术栈，再为每个技术点准备原理和项目用法。",
+    "把回答压缩成 2 分钟版本，再准备一个可继续深入的细节版本。",
+    "针对薄弱点补一次追问练习，重点验证是否能讲清取舍和边界。",
+  ];
+}
+
+function truncate(value: string, max: number): string {
+  const text = value.trim();
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function formatReportTimestamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function getNonce(): string {

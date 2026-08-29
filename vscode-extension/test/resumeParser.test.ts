@@ -11,7 +11,12 @@ vi.mock("vscode", () => ({
   window: {},
 }));
 
-import { buildInstallCommand, parseResumeFile } from "../src/webviewPanel";
+import {
+  buildInstallCommand,
+  buildOcrInstallCommand,
+  getResumeFilePathFromTabInput,
+  parseResumeFile,
+} from "../src/webviewPanel";
 
 let tempRoot = "";
 
@@ -60,6 +65,23 @@ async function tempDocx(name: string, content: string): Promise<string> {
 }
 
 describe("parseResumeFile", () => {
+  it("从系统拖入后被 VS Code 打开的本地简历 Tab 中提取路径", () => {
+    const path = getResumeFilePathFromTabInput({
+      uri: { scheme: "file", fsPath: "D:\\project\\interview-agent\\resume.pdf" },
+    });
+
+    expect(path).toBe("D:\\project\\interview-agent\\resume.pdf");
+  });
+
+  it("忽略非简历格式或非本地文件 Tab", () => {
+    expect(getResumeFilePathFromTabInput({
+      uri: { scheme: "file", fsPath: "D:\\project\\interview-agent\\image.png" },
+    })).toBe("");
+    expect(getResumeFilePathFromTabInput({
+      uri: { scheme: "untitled", fsPath: "resume.md" },
+    })).toBe("");
+  });
+
   it("读取 txt 简历并返回文件名", async () => {
     const file = tempFile("resume.txt", "后端开发，熟悉 Redis");
 
@@ -121,6 +143,30 @@ describe("parseResumeFile", () => {
     expect(statuses).toContain("正在识别扫描版 PDF...");
   });
 
+  it("PDF 有文字层时不触发 OCR fallback", async () => {
+    const file = tempFile("resume.pdf", "%PDF-1.4\n");
+    let ocrCalled = false;
+
+    const result = await parseResumeFile(file, {
+      ocr: async () => {
+        ocrCalled = true;
+        return "不应该执行";
+      },
+      pdfText: async () => "PDF text Redis",
+    });
+
+    expect(result.content).toBe("PDF text Redis");
+    expect(ocrCalled).toBe(false);
+  });
+
+  it("扫描版 PDF 缺 OCR 回调时提示安装 OCR 依赖", async () => {
+    const file = tempFile("resume.pdf", "%PDF-1.4\n");
+
+    await expect(parseResumeFile(file, { pdfText: async () => "" })).rejects.toThrow(
+      "扫描版 PDF 需要 OCR 依赖",
+    );
+  });
+
   it("生成 Windows Terminal 依赖安装命令", () => {
     const original = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", { value: "win32" });
@@ -128,6 +174,20 @@ describe("parseResumeFile", () => {
       const command = buildInstallCommand("C:\\Python\\python.exe", "D:\\a b\\requirements-agent.txt");
       expect(command).toContain("& \"C:\\Python\\python.exe\" -m pip install -r");
       expect(command).toContain("\"D:\\a b\\requirements-agent.txt\"");
+    } finally {
+      if (original) {
+        Object.defineProperty(process, "platform", original);
+      }
+    }
+  });
+
+  it("生成 Windows Terminal OCR 可选依赖安装命令", () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const command = buildOcrInstallCommand("C:\\Python\\python.exe", "D:\\a b\\requirements-ocr.txt");
+      expect(command).toContain("-r");
+      expect(command).toContain("requirements-ocr.txt");
     } finally {
       if (original) {
         Object.defineProperty(process, "platform", original);

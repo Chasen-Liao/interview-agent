@@ -1,7 +1,7 @@
 """扫描版 PDF 简历 OCR 入口。
 
 Extension Host 在普通 PDF 文字层为空时调用本脚本。依赖缺失时输出清晰错误，
-让前端提示用户先安装 Agent 依赖。
+让前端提示用户先安装 OCR 可选依赖。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _load_dependencies():
         raise RuntimeError(
             "OCR 依赖未安装："
             + ", ".join(missing)
-            + "。请点击“安装 Agent 依赖”后重试。"
+            + "。请点击“安装 OCR 依赖”后重试。"
         )
     return fitz, np, RapidOCR
 

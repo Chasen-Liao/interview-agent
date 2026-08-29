@@ -18,6 +18,7 @@
         </span>
       </div>
       <div class="topbar__actions">
+        <button id="exportReport" class="icon-button" title="导出报告" aria-label="导出报告" disabled>⇩</button>
         <button id="historyToggle" class="icon-button" title="历史会话" aria-label="历史会话">☰</button>
         <button id="settings" class="icon-button" title="打开设置" aria-label="打开设置">⚙</button>
       </div>
@@ -38,6 +39,20 @@
       <div class="card">
         <div class="card__header">
           <span class="card__step">1</span>
+          <span class="card__title">模型配置</span>
+          <span class="card__hint">使用 VS Code 设置</span>
+        </div>
+        <div id="modelConfigSummary" class="model-config__summary">正在读取模型配置...</div>
+        <div class="model-config__actions">
+          <button id="openModelSettings" class="secondary-button" type="button">打开设置</button>
+          <button id="testModelConnection" class="secondary-button" type="button">测试模型连接</button>
+        </div>
+        <div id="modelTestStatus" class="status"></div>
+      </div>
+
+      <div class="card">
+        <div class="card__header">
+          <span class="card__step">2</span>
           <span class="card__title">岗位 JD</span>
           <span class="card__hint">粘贴目标岗位的职位描述</span>
         </div>
@@ -46,23 +61,29 @@
 
       <div class="card">
         <div class="card__header">
-          <span class="card__step">2</span>
+          <span class="card__step">3</span>
           <span class="card__title">简历</span>
           <span class="card__hint">上传附件或补充说明</span>
         </div>
-        <button id="pickResume" class="resume-upload" type="button">
+        <label id="pickResume" class="resume-upload" for="resumeFileInput" role="button" tabindex="0">
+          <input
+            id="resumeFileInput"
+            class="resume-upload__input"
+            type="file"
+            accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown"
+          />
           <span class="resume-upload__icon">＋</span>
           <span class="resume-upload__body">
             <span class="resume-upload__title">上传简历附件</span>
             <span id="resumeFile" class="resume-upload__meta">支持 .pdf / .docx / .txt / .md</span>
           </span>
-        </button>
+        </label>
         <textarea id="resumeSupplement" class="field__textarea" rows="4" placeholder="可选：补充求职方向、项目亮点、在招公司等"></textarea>
       </div>
 
       <div class="card">
         <div class="card__header">
-          <span class="card__step">3</span>
+          <span class="card__step">4</span>
           <span class="card__title">当前项目</span>
           <span class="card__hint">面试中自动读取</span>
         </div>

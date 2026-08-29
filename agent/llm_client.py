@@ -311,6 +311,14 @@ class OpenAIClient:
         message = response.choices[0].message
         return self._build_response(message)
 
+    def test_connection(self) -> None:
+        """发起一次极短请求，用于验证 API Key、Base URL 和模型名。"""
+        self._call_with_retry({
+            "model": self._model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 8,
+        })
+
     def _chat_streaming(
         self, kwargs: dict[str, Any], on_delta: Any, should_cancel: Any = None,
     ) -> LLMResponse:
@@ -463,3 +471,53 @@ class OpenAIClient:
         # 理论上不会到这（上面 return 或 raise），保险起见
         assert last_error is not None
         raise last_error
+
+
+def test_model_connection(
+    api_key: str,
+    model: str,
+    base_url: str | None = None,
+    demo_mode: bool = False,
+    client_factory: Any = None,
+) -> dict[str, Any]:
+    """测试当前模型配置，不创建会话、不写历史。"""
+    if demo_mode:
+        return {
+            "ok": True,
+            "kind": "demo",
+            "message": "Demo Mode 使用内置 FakeLLM，无需测试真实模型连接。",
+        }
+    if not api_key.strip():
+        return {
+            "ok": False,
+            "kind": ERROR_KIND_AUTH,
+            "message": "还未配置 API Key。请在设置里填写 interview.apiKey，或开启 Demo Mode。",
+        }
+    if not model.strip():
+        return {
+            "ok": False,
+            "kind": ERROR_KIND_BAD_REQUEST,
+            "message": "还未配置模型名。请填写 interview.model 后再测试连接。",
+        }
+
+    factory = client_factory or OpenAIClient
+    try:
+        client = factory(api_key=api_key, model=model.strip(), base_url=base_url or None)
+        client.test_connection()
+    except LLMError as e:
+        return {"ok": False, "kind": e.kind, "message": e.message}
+    except Exception as e:
+        return {
+            "ok": False,
+            "kind": ERROR_KIND_UNKNOWN,
+            "message": f"模型连接测试失败：{type(e).__name__}: {e}",
+        }
+
+    return {
+        "ok": True,
+        "kind": "ok",
+        "message": "模型连接成功。当前 API Key、Base URL 和模型名可用。",
+    }
+
+
+test_model_connection.__test__ = False

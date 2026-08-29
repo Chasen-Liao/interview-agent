@@ -6,6 +6,7 @@ const webviewRoot = join(__dirname, "..", "src", "webview");
 const html = readFileSync(join(webviewRoot, "index.html"), "utf-8");
 const script = readFileSync(join(webviewRoot, "main.js"), "utf-8");
 const styles = readFileSync(join(webviewRoot, "styles.css"), "utf-8");
+const panelSource = readFileSync(join(__dirname, "..", "src", "webviewPanel.ts"), "utf-8");
 
 describe("Webview 面试入口模板", () => {
   it("输入区只有一个状态按钮，不再保留独立停止按钮", () => {
@@ -21,17 +22,82 @@ describe("Webview 面试入口模板", () => {
     expect(html).toContain("上传简历附件");
     expect(html).toContain("支持 .pdf / .docx / .txt / .md");
     expect(html).toContain('class="resume-upload"');
+    expect(html).toContain('id="resumeFileInput"');
+    expect(html).toContain('type="file"');
+    expect(html).toContain('accept=".pdf,.docx,.txt,.md,.markdown');
     expect(html).toContain('id="resumeSupplement"');
     expect(html).toContain('id="workspaceInfo"');
     expect(html).not.toContain("简历 / 项目背景");
-    expect(script).toContain('vscode.postMessage({ type: "pickResume" })');
+    expect(script).toContain("resumeFileInputEl.files?.[0]");
     expect(script).toContain("请自动读取当前 VS Code 工作区下的项目情况");
+  });
+
+  it("简历上传区支持拖拽上传", () => {
+    expect(script).toContain('resumeFileInputEl.addEventListener("change"');
+    expect(script).toContain("function onResumeDrag");
+    expect(script).toContain("function armResumeFileDrop");
+    expect(script).toContain('"armResumeFileDrop"');
+    expect(script).toContain("function setResumeCaptureState");
+    expect(script).toContain('"resumeCaptureState"');
+    expect(script).toContain("setResumeCaptureState(true)");
+    expect(script).toContain("setResumeCaptureState(false)");
+    expect(script).toContain("function isSystemFileDrag");
+    expect(script).toContain('includes("Files")');
+    expect(script).toContain("[pickResumeBtn, resumeFileInputEl].forEach");
+    expect(script).toContain('dropTarget.addEventListener("dragenter"');
+    expect(script).toContain('dropTarget.addEventListener("dragover"');
+    expect(script).toContain('resumeFileInputEl.addEventListener("drop"');
+    expect(script).toContain('pickResumeBtn.addEventListener("drop"');
+    expect(script).toContain("event.target === resumeFileInputEl");
+    expect(script).toContain('document.addEventListener("dragenter"');
+    expect(script).toContain('document.addEventListener("dragover"');
+    expect(script).toContain('document.addEventListener("drop"');
+    expect(script).toContain("readDroppedResume");
+    expect(script).toContain("function getDroppedResumePayload");
+    expect(script).toContain("getAsFile()");
+    expect(script).toContain("function getDroppedFilePath");
+    expect(script).toContain('"text/uri-list"');
+    expect(script).toContain('"application/vnd.code.tree.resourceuris"');
+    expect(script).toContain('startsWith("application/vnd.code.tree.")');
+    expect(script).toContain('"pickResumePath"');
+    expect(script).toContain("new FileReader()");
+    expect(script).toContain("readAsDataURL(file)");
+    expect(script).toContain('"pickResumeUpload"');
+    expect(script).not.toContain("file?.path");
+    expect(styles).toContain(".resume-upload.is-dragover");
+    expect(styles).toContain(".resume-upload__input");
+    expect(styles).toContain("z-index: 2");
+    expect(styles).toContain("pointer-events: none");
+    expect(panelSource).toContain("enableForms: true");
   });
 
   it("处理 cancelled 通知并显示已停止状态", () => {
     expect(script).toContain('case "cancelled"');
     expect(script).toContain("onCancelled");
     expect(script).toContain("已停止");
+  });
+
+  it("等待回复时按截图样式显示思考球，收到输出后移除", () => {
+    expect(script).toContain("function showThinkingOrb");
+    expect(script).toContain("function removeThinkingOrb");
+    expect(script).toContain("thinking-orb");
+    expect(script).toContain("Waiting for model...");
+    expect(script).toContain("showThinkingOrb()");
+    expect(script).toContain("removeThinkingOrb()");
+    expect(styles).toContain(".thinking-orb");
+    expect(styles).toContain("clamp(18px, 7vw, 26px)");
+    expect(styles).toContain("@keyframes orbSpin");
+  });
+
+  it("思考状态右侧折叠展示工具调用内容", () => {
+    expect(script).toContain("document.createElement(\"details\")");
+    expect(script).toContain("document.createElement(\"summary\")");
+    expect(script).toContain("thinking-details");
+    expect(script).toContain("查看运行命令和工具调用");
+    expect(script).toContain("function updateThinkingDetails");
+    expect(script).toContain("function formatThinkingDetails");
+    expect(styles).toContain(".thinking-details");
+    expect(styles).toContain(".thinking-details__body");
   });
 
   it("面试官消息渲染 Markdown，用户/工具消息保持纯文本", () => {
@@ -44,6 +110,13 @@ describe("Webview 面试入口模板", () => {
     expect(script).toContain("md-code");
     // 取消提示同样经 Markdown 渲染
     expect(script).toContain("body.__raw");
+  });
+
+  it("面试官回答和思考状态不显示外框", () => {
+    expect(styles).toContain(".bubble--interviewer");
+    expect(styles).toContain("background: transparent");
+    expect(styles).toContain("border-color: transparent");
+    expect(styles).toContain(".bubble--thinking");
   });
 
   it("会话条目按钮不被挤压换行（窄侧边栏回归）", () => {
@@ -59,8 +132,12 @@ describe("Webview 面试入口模板", () => {
     expect(script).not.toContain("saveConfig(() => sendChat(text, text))");
   });
 
-  it("模型配置移入 VS Code 设置，面板不再展示配置表单", () => {
+  it("模型配置区只显示摘要和设置入口，面板不展示敏感配置表单", () => {
     expect(html).toContain('id="settings"');
+    expect(html).toContain("模型配置");
+    expect(html).toContain('id="modelConfigSummary"');
+    expect(html).toContain('id="openModelSettings"');
+    expect(html).toContain('id="testModelConnection"');
     expect(html).not.toContain('id="provider"');
     expect(html).not.toContain('id="model"');
     expect(html).not.toContain('id="baseUrl"');
@@ -74,11 +151,21 @@ describe("Webview 面试入口模板", () => {
   it("包含依赖安装和历史会话入口", () => {
     expect(html).toContain('id="dependencyPanel"');
     expect(html).toContain('id="installDependencies"');
+    expect(html).toContain('id="exportReport"');
     expect(html).toContain('id="historyPanel"');
     expect(html).toContain('id="newSession"');
-    expect(script).toContain('type: "installDependencies"');
+    expect(script).toContain('"installDependencies"');
+    expect(script).toContain('"installOcrDependencies"');
+    expect(script).toContain('"testModelConnection"');
+    expect(script).toContain('"exportReport"');
     expect(script).toContain('type: "resumeSession"');
     expect(script).toContain('type: "deleteSession"');
+  });
+
+  it("导出报告前提示报告包含隐私内容", () => {
+    expect(script).toContain("导出的 Markdown 报告会包含 JD、简历和面试对话内容");
+    expect(script).toContain("reportExported");
+    expect(script).toContain("reportError");
   });
 
   it("对话区滚动，输入框固定在面板最底部", () => {

@@ -43,6 +43,30 @@ describe("历史会话标题生成", () => {
     expect(makeSessionTitle(messages, "id")).toBe("聊聊我的 RAG 项目");
   });
 
+  it("JD 中有岗位名称时优先提取岗位标题", () => {
+    const messages = [
+      {
+        role: "user",
+        content:
+          "我们开始一场技术面试。\n\n岗位 JD：\n岗位名称：AI Agent 后端实习生\n职责：负责工具调用链路\n\n当前项目：interview-agent",
+      },
+    ] as Parameters<typeof makeSessionTitle>[0];
+
+    expect(makeSessionTitle(messages, "id")).toBe("AI Agent 后端实习生");
+  });
+
+  it("无 JD 时使用当前项目名和技术栈生成可读标题", () => {
+    const messages = [
+      {
+        role: "user",
+        content:
+          "我们开始一场技术面试。\n\n当前项目：interview-agent\n项目路径：D:\\project\\interview-agent\n这个项目使用 TypeScript 和 Python。",
+      },
+    ] as Parameters<typeof makeSessionTitle>[0];
+
+    expect(makeSessionTitle(messages, "id")).toBe("interview-agent · Python");
+  });
+
   it("没有用户消息时用会话 id 兜底", () => {
     const messages = [
       { role: "assistant", content: "你好" },

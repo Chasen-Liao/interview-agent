@@ -30,6 +30,14 @@ fs.writeFileSync(
   path.join(extensionRoot, "bundled-agent", "requirements-agent.txt"),
   [
     "openai>=2.0",
+    "",
+  ].join("\n"),
+  "utf-8",
+);
+
+fs.writeFileSync(
+  path.join(extensionRoot, "bundled-agent", "requirements-ocr.txt"),
+  [
     "PyMuPDF>=1.24",
     "numpy>=1.26",
     "rapidocr-onnxruntime>=1.3",

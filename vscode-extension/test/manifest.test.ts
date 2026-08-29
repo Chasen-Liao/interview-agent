@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const manifest = JSON.parse(
   readFileSync(join(__dirname, "..", "package.json"), "utf-8"),
 );
+const extensionSource = readFileSync(join(__dirname, "..", "src", "extension.ts"), "utf-8");
 
 describe("VS Code manifest", () => {
   it("把面试视图声明为 webview，否则 VS Code 会按 Tree View 查找数据提供程序", () => {
@@ -18,5 +19,11 @@ describe("VS Code manifest", () => {
 
   it("view id 与激活事件保持一致", () => {
     expect(manifest.activationEvents).toContain("onView:interview.chatView");
+  });
+
+  it("监听系统拖入文件被 VS Code 打开后的兜底 Tab 事件", () => {
+    expect(extensionSource).toContain("window.tabGroups.onDidChangeTabs");
+    expect(extensionSource).toContain("provider.captureOpenedResumeTab(tab)");
+    expect(extensionSource).toContain("event.opened");
   });
 });

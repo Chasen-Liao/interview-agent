@@ -6,16 +6,22 @@
   const inputEl = document.getElementById("input");
   const actionBtn = document.getElementById("action");
   const settingsBtn = document.getElementById("settings");
+  const exportReportBtn = document.getElementById("exportReport");
   const historyToggleBtn = document.getElementById("historyToggle");
   const configStatusEl = document.getElementById("configStatus");
+  const modelConfigSummaryEl = document.getElementById("modelConfigSummary");
+  const modelTestStatusEl = document.getElementById("modelTestStatus");
   const dependencyPanelEl = document.getElementById("dependencyPanel");
   const dependencyMessageEl = document.getElementById("dependencyMessage");
   const dependencyCommandEl = document.getElementById("dependencyCommand");
   const installDependenciesBtn = document.getElementById("installDependencies");
   const checkDependenciesBtn = document.getElementById("checkDependencies");
+  const openModelSettingsBtn = document.getElementById("openModelSettings");
+  const testModelConnectionBtn = document.getElementById("testModelConnection");
   const jdEl = document.getElementById("jd");
   const resumeSupplementEl = document.getElementById("resumeSupplement");
   const pickResumeBtn = document.getElementById("pickResume");
+  const resumeFileInputEl = document.getElementById("resumeFileInput");
   const resumeFileEl = document.getElementById("resumeFile");
   const workspaceInfoEl = document.getElementById("workspaceInfo");
   const startInterviewBtn = document.getElementById("startInterview");
@@ -25,12 +31,18 @@
   const sessionListEl = document.getElementById("sessionList");
   const newSessionBtn = document.getElementById("newSession");
   const refreshSessionsBtn = document.getElementById("refreshSessions");
+  const DROPPED_RESUME_MAX_BYTES = 10 * 1024 * 1024;
 
   let currentInterviewerBubble = null;
+  let thinkingBubble = null;
+  let thinkingToolLogs = [];
   let awaiting = false;
   let stopping = false;
   let interviewStarted = false;
+  let canExportReport = false;
   let resumeAttachment = null;
+  let resumeDropArmSentAt = 0;
+  let resumeCaptureEnabled = null;
   let workspaceState = { hasWorkspace: false, workspaceName: "", workspacePath: "" };
 
   function setAwaiting(value) {
@@ -96,6 +108,8 @@
     ].join("\n");
 
     interviewStarted = true;
+    canExportReport = false;
+    updateExportButton();
     showChatPage();
     sendChat(text, "已提交岗位 JD 和简历，开始面试。");
   }
@@ -120,6 +134,7 @@
 
   function sendChat(text, displayText) {
     appendBubble("user", "我", displayText);
+    showThinkingOrb();
     inputEl.value = "";
     setAwaiting(true);
     vscode.postMessage({ type: "chat", text });
@@ -152,6 +167,27 @@
       setStatus("");
       return;
     }
+    if (msg.type === "modelTestStatus") {
+      setModelTestStatus(msg.message || "", "");
+      return;
+    }
+    if (msg.type === "modelTestResult") {
+      setModelTestStatus(
+        msg.message || "模型连接测试完成",
+        msg.ok ? "success" : "error",
+      );
+      return;
+    }
+    if (msg.type === "reportExported") {
+      setStatus(msg.message || "报告已导出");
+      canExportReport = true;
+      updateExportButton();
+      return;
+    }
+    if (msg.type === "reportError") {
+      setStatus(msg.message || "导出报告失败");
+      return;
+    }
     if (msg.type === "dependencyStatus") {
       showDependencyStatus(msg);
       return;
@@ -163,12 +199,17 @@
     if (msg.type === "sessionNew") {
       clearMessages();
       interviewStarted = false;
+      canExportReport = false;
+      updateExportButton();
       showSetupPage("已新建会话");
       jdEl.focus();
       return;
     }
     if (msg.type === "sessionLoaded") {
       clearMessages();
+      canExportReport = (msg.messages || []).some((item) =>
+        item.role === "user" && (item.content || "").trim(),
+      );
       (msg.messages || []).forEach((item) => {
         appendBubble(
           item.role === "user" ? "user" : "interviewer",
@@ -179,6 +220,7 @@
       interviewStarted = true;
       showChatPage();
       setStatus("已继续历史会话");
+      updateExportButton();
       return;
     }
     if (msg.type === "prefill") {
@@ -223,12 +265,16 @@
     settingsBtn.title = config.demoMode
       ? "打开设置：当前为 Demo Mode"
       : `打开设置：当前模型 ${config.model || "未配置模型"}`;
+    modelConfigSummaryEl.textContent = config.demoMode
+      ? "当前：Demo Mode（不调用真实模型）"
+      : `当前：${config.model || "未配置模型"} · ${config.baseUrl || "OpenAI 默认端点"} · ${config.hasApiKey ? "已配置 API Key" : "未配置 API Key"}`;
   }
 
   function onStream(params) {
     if (stopping) {
       return;
     }
+    removeThinkingOrb();
     if (!currentInterviewerBubble) {
       currentInterviewerBubble = appendBubble("interviewer", "面试官", "");
       currentInterviewerBubble.classList.add("cursor");
@@ -242,41 +288,41 @@
   function onToolCall(params) {
     const { tool, phase, args, result } = params;
     if (phase === "start") {
-      const bubble = appendBubble("tool", tool, formatArgs(args));
-      bubble.classList.add("is-running");
-      bubble.dataset.toolId = tool;
+      if (!thinkingBubble) {
+        showThinkingOrb();
+      }
+      thinkingToolLogs.push({ tool, args: formatArgs(args), result: "", running: true });
+      updateThinkingDetails();
       currentInterviewerBubble = null;
     } else {
-      const candidates = Array.from(
-        messagesEl.querySelectorAll(".bubble--tool.is-running"),
-      ).filter((el) => el.dataset.toolId === tool);
-      const last = candidates[candidates.length - 1];
+      const last = [...thinkingToolLogs].reverse().find((item) =>
+        item.tool === tool && item.running,
+      );
       if (last) {
-        last.classList.remove("is-running");
-        last.querySelector(".bubble__title").textContent = `${tool} 完成`;
-        if (result) {
-          const resultEl = document.createElement("div");
-          resultEl.className = "bubble__result";
-          resultEl.textContent = result;
-          last.appendChild(resultEl);
-        }
+        last.result = result || "";
+        last.running = false;
       }
+      updateThinkingDetails();
     }
     scrollToBottom();
   }
 
   function onDone() {
     stopping = false;
+    removeThinkingOrb();
     if (currentInterviewerBubble) {
       currentInterviewerBubble.classList.remove("cursor");
       currentInterviewerBubble = null;
     }
     setAwaiting(false);
     inputEl.focus();
+    canExportReport = true;
+    updateExportButton();
     vscode.postMessage({ type: "listSessions" });
   }
 
   function onCancelled(params) {
+    removeThinkingOrb();
     const partial = params && params.partial ? String(params.partial) : "";
     const bubble = currentInterviewerBubble || appendBubble("interviewer", "面试官", "");
     bubble.classList.remove("cursor");
@@ -291,11 +337,14 @@
     stopping = false;
     setAwaiting(false);
     inputEl.focus();
+    canExportReport = true;
+    updateExportButton();
     vscode.postMessage({ type: "listSessions" });
   }
 
   function onError(params) {
     stopping = false;
+    removeThinkingOrb();
     appendBubble("error", "出错了", params.message || "未知错误");
     if (currentInterviewerBubble) {
       currentInterviewerBubble.classList.remove("cursor");
@@ -325,8 +374,48 @@
     bubble.appendChild(bodyEl);
 
     messagesEl.appendChild(bubble);
+    updateExportButton();
     scrollToBottom();
     return bubble;
+  }
+
+  function showThinkingOrb() {
+    removeThinkingOrb();
+    thinkingToolLogs = [];
+    thinkingBubble = document.createElement("div");
+    thinkingBubble.className = "bubble bubble--thinking";
+
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "thinking";
+    const orb = document.createElement("div");
+    orb.className = "thinking-orb";
+    orb.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span");
+    text.className = "thinking__text";
+    text.textContent = "Waiting for model...";
+    const details = document.createElement("details");
+    details.className = "thinking-details";
+    const summary = document.createElement("summary");
+    summary.className = "thinking-details__summary";
+    summary.title = "查看运行命令和工具调用";
+    summary.setAttribute("aria-label", "查看运行命令和工具调用");
+    const detailBody = document.createElement("pre");
+    detailBody.className = "thinking-details__body";
+    detailBody.textContent = "暂无工具调用";
+    details.append(summary, detailBody);
+    bodyEl.append(orb, text, details);
+    thinkingBubble.appendChild(bodyEl);
+
+    messagesEl.appendChild(thinkingBubble);
+    scrollToBottom();
+  }
+
+  function removeThinkingOrb() {
+    if (!thinkingBubble) {
+      return;
+    }
+    thinkingBubble.remove();
+    thinkingBubble = null;
   }
 
   // ──────────────────────────────────────────────
@@ -474,8 +563,40 @@
     }
   }
 
+  function updateThinkingDetails() {
+    if (!thinkingBubble) {
+      return;
+    }
+    const body = thinkingBubble.querySelector(".thinking-details__body");
+    if (body) {
+      body.textContent = formatThinkingDetails();
+    }
+  }
+
+  function formatThinkingDetails() {
+    if (!thinkingToolLogs.length) {
+      return "暂无工具调用";
+    }
+    return thinkingToolLogs.map((item, index) => {
+      const parts = [`#${index + 1} ${item.running ? "运行中" : "已完成"}：${item.tool}`];
+      if (item.args) {
+        parts.push(`参数：${item.args}`);
+      }
+      if (item.result) {
+        parts.push(`结果：\n${item.result}`);
+      }
+      return parts.join("\n");
+    }).join("\n\n");
+  }
+
   function setStatus(text) {
     configStatusEl.textContent = text;
+  }
+
+  function setModelTestStatus(text, kind) {
+    modelTestStatusEl.textContent = text;
+    modelTestStatusEl.classList.toggle("is-error", kind === "error");
+    modelTestStatusEl.classList.toggle("is-success", kind === "success");
   }
 
   function showDependencyStatus(status) {
@@ -487,6 +608,8 @@
     dependencyCommandEl.textContent = status.command || "";
     dependencyCommandEl.style.display = status.command ? "block" : "none";
     installDependenciesBtn.style.display = status.canInstall ? "inline-flex" : "none";
+    installDependenciesBtn.dataset.installType = status.installType || "agent";
+    installDependenciesBtn.textContent = status.buttonLabel || "安装 Agent 依赖";
   }
 
   function renderSessions(sessions, current) {
@@ -547,8 +670,16 @@
   function clearMessages() {
     messagesEl.textContent = "";
     currentInterviewerBubble = null;
+    thinkingBubble = null;
+    thinkingToolLogs = [];
     stopping = false;
     setAwaiting(false);
+    canExportReport = false;
+    updateExportButton();
+  }
+
+  function updateExportButton() {
+    exportReportBtn.disabled = !canExportReport || awaiting;
   }
 
   function scrollToBottom() {
@@ -556,6 +687,7 @@
   }
 
   function showSetupPage(status) {
+    setResumeCaptureState(true);
     setupEl.classList.remove("is-collapsed");
     chatEl.classList.add("is-hidden");
     if (status) {
@@ -564,6 +696,7 @@
   }
 
   function showChatPage() {
+    setResumeCaptureState(false);
     setupEl.classList.add("is-collapsed");
     chatEl.classList.remove("is-hidden");
     inputEl.focus();
@@ -577,11 +710,33 @@
   settingsBtn.addEventListener("click", () => {
     vscode.postMessage({ type: "openSettings" });
   });
+  openModelSettingsBtn.addEventListener("click", () => {
+    vscode.postMessage({ type: "openSettings" });
+  });
+  exportReportBtn.addEventListener("click", () => {
+    if (exportReportBtn.disabled) {
+      return;
+    }
+    const ok = window.confirm(
+      "导出的 Markdown 报告会包含 JD、简历和面试对话内容，并保存到当前工作区。确认导出？",
+    );
+    if (ok) {
+      vscode.postMessage({ type: "exportReport" });
+    }
+  });
   installDependenciesBtn.addEventListener("click", () => {
-    vscode.postMessage({ type: "installDependencies" });
+    vscode.postMessage({
+      type: installDependenciesBtn.dataset.installType === "ocr"
+        ? "installOcrDependencies"
+        : "installDependencies",
+    });
   });
   checkDependenciesBtn.addEventListener("click", () => {
     vscode.postMessage({ type: "checkDependencies" });
+  });
+  testModelConnectionBtn.addEventListener("click", () => {
+    setModelTestStatus("正在测试模型连接...", "");
+    vscode.postMessage({ type: "testModelConnection" });
   });
   newSessionBtn.addEventListener("click", () => {
     vscode.postMessage({ type: "newSession" });
@@ -589,9 +744,63 @@
   refreshSessionsBtn.addEventListener("click", () => {
     vscode.postMessage({ type: "listSessions" });
   });
-  pickResumeBtn.addEventListener("click", () => {
-    vscode.postMessage({ type: "pickResume" });
+  resumeFileInputEl.addEventListener("change", () => {
+    const file = resumeFileInputEl.files?.[0];
+    if (file) {
+      readDroppedResume(file);
+    }
+    resumeFileInputEl.value = "";
   });
+  pickResumeBtn.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      resumeFileInputEl.click();
+    }
+  });
+  [pickResumeBtn, resumeFileInputEl].forEach((dropTarget) => {
+    dropTarget.addEventListener("dragenter", (event) => {
+      onResumeDrag(event);
+    });
+    dropTarget.addEventListener("dragover", (event) => {
+      onResumeDrag(event);
+    });
+    dropTarget.addEventListener("dragleave", () => {
+      pickResumeBtn.classList.remove("is-dragover");
+    });
+  });
+  resumeFileInputEl.addEventListener("drop", () => {
+    pickResumeBtn.classList.remove("is-dragover");
+  });
+  pickResumeBtn.addEventListener("drop", (event) => {
+    if (event.target === resumeFileInputEl && event.dataTransfer?.files?.length) {
+      return;
+    }
+    handleResumeDrop(event);
+  });
+  document.addEventListener("dragenter", (event) => {
+    if (!isResumeDropEvent(event)) {
+      return;
+    }
+    onResumeDrag(event);
+    pickResumeBtn.classList.add("is-dragover");
+  }, true);
+  document.addEventListener("dragover", (event) => {
+    if (!isResumeDropEvent(event)) {
+      return;
+    }
+    onResumeDrag(event);
+    pickResumeBtn.classList.add("is-dragover");
+  }, true);
+  document.addEventListener("drop", (event) => {
+    if (!isResumeDropEvent(event)) {
+      return;
+    }
+    if (event.target === resumeFileInputEl && event.dataTransfer?.files?.length) {
+      pickResumeBtn.classList.remove("is-dragover");
+      return;
+    }
+    handleResumeDrop(event);
+  }, true);
   startInterviewBtn.addEventListener("click", startInterview);
   actionBtn.addEventListener("click", onAction);
 
@@ -606,7 +815,174 @@
   vscode.postMessage({ type: "ready" });
   vscode.postMessage({ type: "listSessions" });
   updateActionButton();
+  updateExportButton();
   if (!interviewStarted) {
+    setResumeCaptureState(true);
     jdEl.focus();
+  }
+
+  function isResumeDropEvent(event) {
+    return !setupEl.classList.contains("is-collapsed");
+  }
+
+  function onResumeDrag(event) {
+    armResumeFileDrop();
+    if (!isSystemFileDrag(event)) {
+      event.preventDefault();
+    }
+    pickResumeBtn.classList.add("is-dragover");
+  }
+
+  function armResumeFileDrop() {
+    const now = Date.now();
+    if (now - resumeDropArmSentAt < 1000) {
+      return;
+    }
+    resumeDropArmSentAt = now;
+    vscode.postMessage({ type: "armResumeFileDrop" });
+  }
+
+  function setResumeCaptureState(enabled) {
+    if (resumeCaptureEnabled === enabled) {
+      return;
+    }
+    resumeCaptureEnabled = enabled;
+    vscode.postMessage({ type: "resumeCaptureState", enabled });
+  }
+
+  function isSystemFileDrag(event) {
+    return Array.from(event.dataTransfer?.types || []).includes("Files");
+  }
+
+  function handleResumeDrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    pickResumeBtn.classList.remove("is-dragover");
+    const payload = getDroppedResumePayload(event);
+    if (!payload) {
+      setStatus("没有识别到拖拽文件，请拖入单个简历文件，或点击上传区域选择文件。");
+      return;
+    }
+    if (payload.type === "file") {
+      readDroppedResume(payload.file);
+      return;
+    }
+    setStatus("正在读取拖拽文件...");
+    vscode.postMessage({ type: "pickResumePath", path: payload.path });
+  }
+
+  // VS Code 资源管理器拖入通常只有 URI 文本；系统文件拖入通常有 File 对象。
+  function getDroppedResumePayload(event) {
+    const file = event.dataTransfer?.files?.[0];
+    if (file) {
+      return { type: "file", file };
+    }
+    const items = Array.from(event.dataTransfer?.items || []);
+    const fileItem = items.find((item) => item.kind === "file");
+    const itemFile = fileItem?.getAsFile();
+    if (itemFile) {
+      return { type: "file", file: itemFile };
+    }
+    const path = getDroppedFilePath(event.dataTransfer);
+    return path ? { type: "path", path } : null;
+  }
+
+  function getDroppedFilePath(dataTransfer) {
+    const types = Array.from(dataTransfer?.types || []);
+    const candidates = [
+      "text/uri-list",
+      "application/vnd.code.tree.resourceuris",
+      "application/vnd.code.tree.explorer",
+      "text/plain",
+      ...types.filter((type) => type.startsWith("application/vnd.code.tree.")),
+    ];
+    for (const type of [...new Set(candidates)]) {
+      const value = dataTransfer?.getData?.(type);
+      const path = parseDroppedFilePath(value);
+      if (path) {
+        return path;
+      }
+    }
+    return "";
+  }
+
+  function parseDroppedFilePath(value) {
+    const entries = readDroppedEntries(value);
+    for (const entry of entries) {
+      const path = fileUriToFsPath(entry) || normalizeDroppedFsPath(entry);
+      if (path && isSupportedResumePath(path)) {
+        return path;
+      }
+    }
+    return "";
+  }
+
+  function readDroppedEntries(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return parsed.flatMap(readDroppedEntries);
+      }
+      if (parsed && typeof parsed === "object") {
+        return readDroppedEntries(parsed.resourceUri || parsed.uri || parsed.fsPath || "");
+      }
+    } catch {
+      // 非 JSON 的拖拽载荷继续按普通文本解析。
+    }
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+  }
+
+  function fileUriToFsPath(value) {
+    if (!/^file:/i.test(value)) {
+      return "";
+    }
+    try {
+      const url = new URL(value);
+      let path = decodeURIComponent(url.pathname || "");
+      if (/^\/[a-zA-Z]:\//.test(path)) {
+        path = path.slice(1);
+      }
+      return path.replace(/\//g, "\\");
+    } catch {
+      return "";
+    }
+  }
+
+  function normalizeDroppedFsPath(value) {
+    const path = String(value || "").trim().replace(/^"|"$/g, "");
+    return /^[a-zA-Z]:[\\/]/.test(path) ? path : "";
+  }
+
+  function isSupportedResumePath(path) {
+    return /\.(pdf|docx|txt|md|markdown)$/i.test(path);
+  }
+
+  function readDroppedResume(file) {
+    if (file.size > DROPPED_RESUME_MAX_BYTES) {
+      setStatus("简历文件超过 10MB，请点击上传区域选择文件。");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const dataBase64 = dataUrl.includes(",") ? dataUrl.split(",").pop() : dataUrl;
+      vscode.postMessage({
+        type: "pickResumeUpload",
+        fileName: file.name,
+        dataBase64,
+      });
+    };
+    reader.onerror = () => {
+      setStatus("拖拽文件读取失败，请点击上传区域选择文件。");
+    };
+    setStatus("正在读取拖拽文件...");
+    reader.readAsDataURL(file);
   }
 })();

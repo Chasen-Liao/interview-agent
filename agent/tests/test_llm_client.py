@@ -19,6 +19,7 @@ from agent.llm_client import (
     LLMResponse,
     make_text_response,
     make_tool_call_response,
+    test_model_connection,
 )
 
 # ──────────────────────────────────────────────
@@ -391,6 +392,65 @@ class TestOpenAIImportError:
         assert exc_info.value.kind == ERROR_KIND_UNKNOWN
         assert "pip install openai" in exc_info.value.message
         assert "Demo Mode" in exc_info.value.message
+
+
+class TestModelConnection:
+    def test_success_returns_user_friendly_message(self):
+        """连接测试成功时返回成功状态，不需要进入会话历史。"""
+
+        class OkClient:
+            def test_connection(self):
+                return None
+
+        result = test_model_connection(
+            api_key="sk-test",
+            model="gpt-4o-mini",
+            client_factory=lambda **_kwargs: OkClient(),
+        )
+
+        assert result["ok"] is True
+        assert "连接成功" in result["message"]
+
+    def test_demo_mode_short_circuit(self):
+        """Demo Mode 不需要真实 API 测试。"""
+        result = test_model_connection(api_key="", model="", demo_mode=True)
+
+        assert result["ok"] is True
+        assert "Demo Mode" in result["message"]
+
+    def test_missing_api_key_fails_before_network(self):
+        """缺 API Key 直接给配置提示。"""
+        result = test_model_connection(api_key="", model="gpt-4o-mini")
+
+        assert result["ok"] is False
+        assert result["kind"] == "auth"
+        assert "interview.apiKey" in result["message"]
+
+    def test_missing_model_fails_before_network(self):
+        """缺模型名直接给配置提示。"""
+        result = test_model_connection(api_key="sk-test", model="")
+
+        assert result["ok"] is False
+        assert result["kind"] == "bad_request"
+        assert "interview.model" in result["message"]
+
+    def test_classified_llm_error_becomes_result(self):
+        """模型不存在等 LLMError 被转成连接测试失败结果。"""
+        from agent.llm_client import ERROR_KIND_BAD_REQUEST, LLMError
+
+        class BadClient:
+            def test_connection(self):
+                raise LLMError(ERROR_KIND_BAD_REQUEST, "模型不存在，请检查 interview.model")
+
+        result = test_model_connection(
+            api_key="sk-test",
+            model="bad-model",
+            client_factory=lambda **_kwargs: BadClient(),
+        )
+
+        assert result["ok"] is False
+        assert result["kind"] == ERROR_KIND_BAD_REQUEST
+        assert "interview.model" in result["message"]
 
 
 # ──────────────────────────────────────────────
