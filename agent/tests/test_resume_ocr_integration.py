@@ -40,8 +40,13 @@ def test_real_ocr_reads_generated_image_and_scanned_pdf(tmp_path: Path):
 
 
 def _run_ocr(path: Path) -> tuple[str, float]:
+    progress = []
     start = time.perf_counter()
-    text = extract_text(str(path), max_pages=3)
+    text = extract_text(str(path), max_pages=3, on_progress=progress.append)
+    assert progress
+    assert progress[-1]["stage"] == "normalize"
+    if path.suffix.lower() == ".pdf":
+        assert any(event.get("currentPage") == 1 for event in progress)
     return text, time.perf_counter() - start
 
 

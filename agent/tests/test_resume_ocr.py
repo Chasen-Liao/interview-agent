@@ -44,6 +44,7 @@ def test_extract_text_rejects_unsupported_format(tmp_path: Path):
 def test_extract_text_reads_image_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     image_path = tmp_path / "resume.png"
     image_path.write_bytes(b"fake")
+    progress = []
 
     monkeypatch.setattr(
         resume_ocr,
@@ -51,4 +52,26 @@ def test_extract_text_reads_image_path(monkeypatch: pytest.MonkeyPatch, tmp_path
         lambda: (object(), object(), FakeRapidOCR),
     )
 
-    assert resume_ocr.extract_text(str(image_path)) == "Daisy OCR Resume\nPython Redis\nMySQL"
+    assert resume_ocr.extract_text(str(image_path), on_progress=progress.append) == (
+        "Daisy OCR Resume\nPython Redis\nMySQL"
+    )
+    assert [event["stage"] for event in progress] == ["prepare", "recognize", "normalize"]
+    assert progress[1]["currentPage"] == 1
+    assert progress[1]["totalPages"] == 1
+    assert isinstance(progress[1]["elapsedMs"], int)
+
+
+def test_write_progress_outputs_json_to_stderr(capsys: pytest.CaptureFixture[str]):
+    resume_ocr._write_progress({
+        "kind": "ocr_progress",
+        "stage": "recognize",
+        "message": "正在识别图片简历...",
+        "currentPage": 1,
+        "totalPages": 1,
+        "elapsedMs": 12,
+    })
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert '"kind": "ocr_progress"' in captured.err
+    assert '"currentPage": 1' in captured.err

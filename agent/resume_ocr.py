@@ -6,10 +6,12 @@ Extension Host 在普通 PDF 文字层为空或用户上传图片简历时调用
 
 from __future__ import annotations
 
+import json
 import re
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -19,6 +21,7 @@ if hasattr(sys.stdout, "reconfigure"):
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 PDF_EXTENSIONS = {".pdf"}
 SUPPORTED_EXTENSIONS = PDF_EXTENSIONS | IMAGE_EXTENSIONS
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def _load_dependencies():
@@ -55,22 +58,49 @@ def _load_dependencies():
     return fitz, np, RapidOCR
 
 
-def extract_text(file_path: str, max_pages: int = 5) -> str:
+def extract_text(
+    file_path: str,
+    max_pages: int = 5,
+    on_progress: ProgressCallback | None = None,
+) -> str:
     """从扫描版 PDF 或图片提取文字，PDF 最多识别前 max_pages 页。"""
+    started_at = time.perf_counter()
     path = Path(file_path)
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise ValueError("当前 OCR 只支持 .pdf、.png、.jpg、.jpeg、.webp 文件。")
 
+    _emit_progress(on_progress, "prepare", "正在准备 OCR...", started_at)
     fitz, np, RapidOCR = _load_dependencies()
     engine = RapidOCR()
     parts: list[str] = []
 
     if ext in IMAGE_EXTENSIONS:
-        return _normalize_text(_extract_result_text(engine(str(path))))
+        _emit_progress(on_progress, "recognize", "正在识别图片简历...", started_at, 1, 1)
+        text = _extract_result_text(engine(str(path)))
+        _emit_progress(on_progress, "normalize", "正在整理 OCR 文本...", started_at, 1, 1)
+        return _normalize_text(text)
 
     with fitz.open(file_path) as doc:
-        for page_index in range(min(max_pages, len(doc))):
+        total_pages = min(max_pages, len(doc))
+        _emit_progress(
+            on_progress,
+            "prepare",
+            f"正在识别扫描版 PDF：共 {total_pages} 页",
+            started_at,
+            0,
+            total_pages,
+        )
+        for page_index in range(total_pages):
+            current_page = page_index + 1
+            _emit_progress(
+                on_progress,
+                "render",
+                f"正在渲染扫描版 PDF：第 {current_page}/{total_pages} 页",
+                started_at,
+                current_page,
+                total_pages,
+            )
             page = doc[page_index]
             pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), alpha=False)
             image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
@@ -78,9 +108,42 @@ def extract_text(file_path: str, max_pages: int = 5) -> str:
                 pix.width,
                 pix.n,
             )
+            _emit_progress(
+                on_progress,
+                "recognize",
+                f"正在识别扫描版 PDF：第 {current_page}/{total_pages} 页",
+                started_at,
+                current_page,
+                total_pages,
+            )
             parts.extend(_extract_result_text(engine(image)).splitlines())
 
+    _emit_progress(on_progress, "normalize", "正在整理 OCR 文本...", started_at)
     return _normalize_text("\n".join(parts))
+
+
+def _emit_progress(
+    on_progress: ProgressCallback | None,
+    stage: str,
+    message: str,
+    started_at: float,
+    current_page: int | None = None,
+    total_pages: int | None = None,
+) -> None:
+    """发出 OCR 进度事件；CLI 用 stderr JSON Lines，业务文本只走 stdout。"""
+    if on_progress is None:
+        return
+    event: dict[str, Any] = {
+        "kind": "ocr_progress",
+        "stage": stage,
+        "message": message,
+        "elapsedMs": int((time.perf_counter() - started_at) * 1000),
+    }
+    if current_page is not None:
+        event["currentPage"] = current_page
+    if total_pages is not None:
+        event["totalPages"] = total_pages
+    on_progress(event)
 
 
 def _extract_result_text(result: Any) -> str:
@@ -121,12 +184,18 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("缺少 PDF 文件路径\n")
         return 2
     try:
-        text = extract_text(argv[0])
+        text = extract_text(argv[0], on_progress=_write_progress)
     except Exception as e:
         sys.stderr.write(str(e) + "\n")
         return 1
     sys.stdout.write(text)
     return 0
+
+
+def _write_progress(event: dict[str, Any]) -> None:
+    """将 OCR 进度写到 stderr，避免污染 stdout 的识别文本。"""
+    sys.stderr.write(json.dumps(event, ensure_ascii=False) + "\n")
+    sys.stderr.flush()
 
 
 if __name__ == "__main__":

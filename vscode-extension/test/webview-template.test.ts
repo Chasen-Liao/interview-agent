@@ -32,6 +32,15 @@ describe("Webview 面试入口模板", () => {
     expect(script).toContain("请自动读取当前 VS Code 工作区下的项目情况");
   });
 
+  it("展示 OCR 处理进度", () => {
+    expect(script).toContain('msg.type === "resumeOcrProgress"');
+    expect(script).toContain("formatOcrProgress");
+    expect(script).toContain("elapsedMs");
+    expect(script).toContain("currentPage");
+    expect(script).toContain("totalPages");
+    expect(script).toContain("已耗时");
+  });
+
   it("简历上传区支持拖拽上传", () => {
     expect(script).toContain('resumeFileInputEl.addEventListener("change"');
     expect(script).toContain("function onResumeDrag");

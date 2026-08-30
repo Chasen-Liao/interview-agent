@@ -380,6 +380,9 @@ export class InterviewViewProvider implements WebviewViewProvider {
           pythonPath: pythonLookup.pythonPath,
           scriptPath: join(options.pythonPathRoot, "agent", "resume_ocr.py"),
           pythonPathRoot: options.pythonPathRoot,
+          onProgress: (progress) => {
+            void webview.postMessage({ type: "resumeOcrProgress", progress });
+          },
         }),
         onStatus: (message) => {
           void webview.postMessage({ type: "resumeStatus", message });
@@ -872,11 +875,20 @@ interface ResumeParseOptions {
   pdfText?: (filePath: string) => Promise<string>;
 }
 
+interface ResumeOcrProgress {
+  stage: string;
+  message: string;
+  elapsedMs: number;
+  currentPage?: number;
+  totalPages?: number;
+}
+
 interface ResumeOcrInput {
   filePath: string;
   pythonPath: string;
   scriptPath: string;
   pythonPathRoot: string;
+  onProgress?: (progress: ResumeOcrProgress) => void;
 }
 
 /** 读取并解析简历附件，返回可注入首轮上下文的纯文本。 */
@@ -960,7 +972,7 @@ function quoteShell(value: string): string {
 }
 
 async function runResumeOcr(input: ResumeOcrInput): Promise<string> {
-  const { execFile } = await import("child_process");
+  const { spawn } = await import("child_process");
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
     const startedAt = Date.now();
@@ -974,36 +986,112 @@ async function runResumeOcr(input: ResumeOcrInput): Promise<string> {
     // OCR 结果含中文，强制 Python stdout 用 UTF-8（脚本内也有 reconfigure 兜底）
     env.PYTHONIOENCODING = "utf-8";
 
-    execFile(
+    const child = spawn(
       input.pythonPath,
       [input.scriptPath, input.filePath],
       {
-        encoding: "utf-8",
         env,
-        timeout: 120_000,
         windowsHide: true,
-        maxBuffer: 1024 * 1024,
-      },
-      (error, stdout, stderr) => {
-        const elapsedMs = Date.now() - startedAt;
-        if (error) {
-          logger.appendLine(`[ocr] failed type=${fileType} elapsedMs=${elapsedMs}`);
-          reject(new Error(
-            `OCR 识别失败。请先安装 OCR 依赖，或改用文本粘贴。${stderr ? `\n${stderr.trim()}` : ""}`,
-          ));
-          return;
-        }
-        const text = stdout.trim();
-        if (!text) {
-          logger.appendLine(`[ocr] empty type=${fileType} elapsedMs=${elapsedMs}`);
-          reject(new Error("OCR 未识别到文字。请改用文本粘贴。"));
-          return;
-        }
-        logger.appendLine(`[ocr] success type=${fileType} chars=${text.length} elapsedMs=${elapsedMs}`);
-        resolve(text);
       },
     );
+    let stdout = "";
+    let stderrBuffer = "";
+    const stderrLines: string[] = [];
+    let settled = false;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, 120_000);
+
+    const finishReject = (message: string): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      reject(new Error(message));
+    };
+    const handleStderrLine = (line: string): void => {
+      const progress = parseResumeOcrProgressLine(line);
+      if (progress) {
+        logger.appendLine(
+          `[ocr] progress stage=${progress.stage} page=${progress.currentPage ?? "-"}`
+            + `/${progress.totalPages ?? "-"} elapsedMs=${progress.elapsedMs}`,
+        );
+        input.onProgress?.(progress);
+        return;
+      }
+      if (line.trim()) {
+        stderrLines.push(line.trim());
+      }
+    };
+
+    child.stdout.setEncoding("utf-8");
+    child.stderr.setEncoding("utf-8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrBuffer += chunk;
+      const lines = stderrBuffer.split(/\r?\n/);
+      stderrBuffer = lines.pop() || "";
+      lines.forEach(handleStderrLine);
+    });
+    child.on("error", (error) => {
+      logger.appendLine(`[ocr] failed type=${fileType} elapsedMs=${Date.now() - startedAt}`);
+      finishReject(`OCR 识别失败。请先安装 OCR 依赖，或改用文本粘贴。\n${error.message}`);
+    });
+    child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      if (stderrBuffer.trim()) {
+        handleStderrLine(stderrBuffer);
+      }
+      const elapsedMs = Date.now() - startedAt;
+      clearTimeout(timeout);
+      if (timedOut) {
+        logger.appendLine(`[ocr] failed type=${fileType} elapsedMs=${elapsedMs}`);
+        reject(new Error("OCR 识别超时。请改用更清晰或页数更少的文件，或改用文本粘贴。"));
+        return;
+      }
+      if (code !== 0) {
+        logger.appendLine(`[ocr] failed type=${fileType} elapsedMs=${elapsedMs}`);
+        const detail = stderrLines.join("\n").trim();
+        reject(new Error(
+          `OCR 识别失败。请先安装 OCR 依赖，或改用文本粘贴。${detail ? `\n${detail}` : ""}`,
+        ));
+        return;
+      }
+      const text = stdout.trim();
+      if (!text) {
+        logger.appendLine(`[ocr] empty type=${fileType} elapsedMs=${elapsedMs}`);
+        reject(new Error("OCR 未识别到文字。请改用文本粘贴。"));
+        return;
+      }
+      logger.appendLine(`[ocr] success type=${fileType} chars=${text.length} elapsedMs=${elapsedMs}`);
+      resolve(text);
+    });
   });
+}
+
+export function parseResumeOcrProgressLine(line: string): ResumeOcrProgress | null {
+  try {
+    const parsed = JSON.parse(line) as Partial<ResumeOcrProgress> & { kind?: string };
+    if (parsed.kind !== "ocr_progress" || typeof parsed.message !== "string") {
+      return null;
+    }
+    return {
+      stage: typeof parsed.stage === "string" ? parsed.stage : "progress",
+      message: parsed.message,
+      elapsedMs: typeof parsed.elapsedMs === "number" ? parsed.elapsedMs : 0,
+      currentPage: typeof parsed.currentPage === "number" ? parsed.currentPage : undefined,
+      totalPages: typeof parsed.totalPages === "number" ? parsed.totalPages : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function runModelConnectionTest(input: ModelTestInput): Promise<ModelTestResult> {

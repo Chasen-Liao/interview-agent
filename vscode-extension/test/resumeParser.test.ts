@@ -15,6 +15,7 @@ import {
   buildInstallCommand,
   buildOcrInstallCommand,
   getResumeFilePathFromTabInput,
+  parseResumeOcrProgressLine,
   parseResumeFile,
 } from "../src/webviewPanel";
 
@@ -215,5 +216,22 @@ describe("parseResumeFile", () => {
         Object.defineProperty(process, "platform", original);
       }
     }
+  });
+
+  it("解析 OCR 进度 JSON Lines，忽略普通 stderr", () => {
+    expect(parseResumeOcrProgressLine("not json")).toBeNull();
+    expect(parseResumeOcrProgressLine('{"kind":"other","message":"x"}')).toBeNull();
+
+    const progress = parseResumeOcrProgressLine(
+      '{"kind":"ocr_progress","stage":"recognize","message":"正在识别","currentPage":2,"totalPages":3,"elapsedMs":1234}',
+    );
+
+    expect(progress).toEqual({
+      stage: "recognize",
+      message: "正在识别",
+      currentPage: 2,
+      totalPages: 3,
+      elapsedMs: 1234,
+    });
   });
 });

@@ -162,6 +162,10 @@
       setStatus(msg.message || "");
       return;
     }
+    if (msg.type === "resumeOcrProgress") {
+      setStatus(formatOcrProgress(msg.progress));
+      return;
+    }
     if (msg.type === "resumeError") {
       appendBubble("error", "出错了", msg.message || "读取简历失败");
       setStatus("");
@@ -591,6 +595,24 @@
 
   function setStatus(text) {
     configStatusEl.textContent = text;
+  }
+
+  function formatOcrProgress(progress) {
+    const message = progress?.message || "正在 OCR 识别...";
+    const elapsed = typeof progress?.elapsedMs === "number"
+      ? `，已耗时 ${Math.max(0, Math.round(progress.elapsedMs / 1000))}s`
+      : "";
+    if (
+      typeof progress?.currentPage === "number"
+      && typeof progress?.totalPages === "number"
+      && progress.totalPages > 0
+    ) {
+      const page = `第 ${progress.currentPage}/${progress.totalPages} 页`;
+      return message.includes(page)
+        ? `${message}${elapsed}`
+        : `${message}（${page}${elapsed}）`;
+    }
+    return `${message}${elapsed}`;
   }
 
   function setModelTestStatus(text, kind) {
