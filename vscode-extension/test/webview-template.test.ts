@@ -20,11 +20,11 @@ describe("Webview 面试入口模板", () => {
 
   it("首屏包含简历上传和当前项目自动读取信息", () => {
     expect(html).toContain("上传简历附件");
-    expect(html).toContain("支持 .pdf / .docx / .txt / .md");
+    expect(html).toContain("支持 .pdf / .docx / .txt / .md / 图片");
     expect(html).toContain('class="resume-upload"');
     expect(html).toContain('id="resumeFileInput"');
     expect(html).toContain('type="file"');
-    expect(html).toContain('accept=".pdf,.docx,.txt,.md,.markdown');
+    expect(html).toContain('accept=".pdf,.docx,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp');
     expect(html).toContain('id="resumeSupplement"');
     expect(html).toContain('id="workspaceInfo"');
     expect(html).not.toContain("简历 / 项目背景");

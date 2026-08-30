@@ -8,9 +8,9 @@
 2. 在侧边栏打开 `Interview Agent`。
 3. 开启 Demo Mode，或配置 `interview.apiKey`、`interview.baseUrl`、`interview.model`。
 4. 点击“测试模型连接”确认配置可用。
-5. 粘贴岗位 JD，上传简历或填写简历补充。
+5. 粘贴岗位 JD，上传 PDF、DOCX、TXT、MD 或图片简历，也可以填写简历补充。
 6. 开始面试，完成后可导出报告。
 
-报告会以 Markdown 保存到当前工作区 `.interview-agent/reports`。历史会话保存在 `.sessions`。
+扫描版 PDF 和图片简历会走本地 OCR，可选依赖按需安装。报告会以 Markdown 保存到当前工作区 `.interview-agent/reports`。历史会话保存在 `.sessions`。
 
 本扩展只用于技术面试练习，不会自动修改、提交或发布你的代码。

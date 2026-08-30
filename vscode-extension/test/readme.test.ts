@@ -18,6 +18,7 @@ describe("README 发布说明", () => {
       "不会自动修改、提交或发布",
       "故障排查",
       "OCR",
+      "图片简历",
     ]) {
       expect(rootReadme).toContain(keyword);
     }
@@ -27,6 +28,7 @@ describe("README 发布说明", () => {
     expect(extensionReadme).toContain("Demo Mode");
     expect(extensionReadme).toContain("测试模型连接");
     expect(extensionReadme).toContain("导出报告");
+    expect(extensionReadme).toContain("图片简历");
     expect(extensionReadme).toContain("不会自动修改、提交或发布");
   });
 });

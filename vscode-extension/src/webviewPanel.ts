@@ -325,7 +325,7 @@ export class InterviewViewProvider implements WebviewViewProvider {
       canSelectFolders: false,
       canSelectMany: false,
       filters: {
-        "简历文件": ["pdf", "docx", "txt", "md", "markdown"],
+        "简历文件": ["pdf", "docx", "txt", "md", "markdown", "png", "jpg", "jpeg", "webp"],
       },
       title: "选择简历文件",
     });
@@ -375,8 +375,8 @@ export class InterviewViewProvider implements WebviewViewProvider {
     try {
       void webview.postMessage({ type: "resumeStatus", message: "正在读取简历..." });
       const resume = await parseResumeFile(filePath, {
-        ocr: (pdfPath) => runResumeOcr({
-          filePath: pdfPath,
+        ocr: (ocrPath) => runResumeOcr({
+          filePath: ocrPath,
           pythonPath: pythonLookup.pythonPath,
           scriptPath: join(options.pythonPathRoot, "agent", "resume_ocr.py"),
           pythonPathRoot: options.pythonPathRoot,
@@ -910,13 +910,19 @@ export async function parseResumeFile(
       options.onStatus?.("正在识别扫描版 PDF...");
       raw = await options.ocr(filePath);
     }
+  } else if (isSupportedResumeImageExt(ext)) {
+    if (!options.ocr) {
+      throw new Error("图片简历需要 OCR 依赖。请安装 OCR 依赖，或改用文本粘贴。");
+    }
+    options.onStatus?.("正在识别图片简历...");
+    raw = await options.ocr(filePath);
   } else {
-    throw new Error("当前只支持 .pdf、.docx、.txt、.md、.markdown 简历。");
+    throw new Error("当前只支持 .pdf、.docx、.txt、.md、.markdown、.png、.jpg、.jpeg、.webp 简历。");
   }
 
   const normalized = raw.trim();
   if (!normalized) {
-    throw new Error("未从简历附件中提取到文字内容。扫描版 PDF 请改用文本粘贴。");
+    throw new Error("未从简历附件中提取到文字内容。扫描版 PDF 或图片请改用文本粘贴。");
   }
 
   return {
@@ -957,6 +963,10 @@ async function runResumeOcr(input: ResumeOcrInput): Promise<string> {
   const { execFile } = await import("child_process");
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
+    const startedAt = Date.now();
+    const logger = getDebugChannel();
+    const fileType = extname(input.filePath).toLowerCase() || "unknown";
+    logger.appendLine(`[ocr] start file=${basename(input.filePath)} type=${fileType}`);
     const existing = env.PYTHONPATH ?? "";
     env.PYTHONPATH = existing
       ? `${input.pythonPathRoot}${process.platform === "win32" ? ";" : ":"}${existing}`
@@ -975,7 +985,9 @@ async function runResumeOcr(input: ResumeOcrInput): Promise<string> {
         maxBuffer: 1024 * 1024,
       },
       (error, stdout, stderr) => {
+        const elapsedMs = Date.now() - startedAt;
         if (error) {
+          logger.appendLine(`[ocr] failed type=${fileType} elapsedMs=${elapsedMs}`);
           reject(new Error(
             `OCR 识别失败。请先安装 OCR 依赖，或改用文本粘贴。${stderr ? `\n${stderr.trim()}` : ""}`,
           ));
@@ -983,9 +995,11 @@ async function runResumeOcr(input: ResumeOcrInput): Promise<string> {
         }
         const text = stdout.trim();
         if (!text) {
+          logger.appendLine(`[ocr] empty type=${fileType} elapsedMs=${elapsedMs}`);
           reject(new Error("OCR 未识别到文字。请改用文本粘贴。"));
           return;
         }
+        logger.appendLine(`[ocr] success type=${fileType} chars=${text.length} elapsedMs=${elapsedMs}`);
         resolve(text);
       },
     );
@@ -1038,7 +1052,9 @@ async function runModelConnectionTest(input: ModelTestInput): Promise<ModelTestR
 }
 
 function isOcrDependencyError(message: string): boolean {
-  return message.includes("OCR 依赖") || message.includes("rapidocr-onnxruntime");
+  return message.includes("OCR 依赖")
+    || message.includes("rapidocr")
+    || message.includes("onnxruntime");
 }
 
 export function getResumeFilePathFromTabInput(input: unknown): string {
@@ -1050,9 +1066,13 @@ export function getResumeFilePathFromTabInput(input: unknown): string {
 }
 
 function isSupportedResumeFilePath(filePath: string): boolean {
-  return [".pdf", ".docx", ".txt", ".md", ".markdown"].includes(
-    extname(filePath).toLowerCase(),
-  );
+  const ext = extname(filePath).toLowerCase();
+  return [".pdf", ".docx", ".txt", ".md", ".markdown"].includes(ext)
+    || isSupportedResumeImageExt(ext);
+}
+
+function isSupportedResumeImageExt(ext: string): boolean {
+  return [".png", ".jpg", ".jpeg", ".webp"].includes(ext);
 }
 
 function safeUploadedFileName(fileName: string): string {

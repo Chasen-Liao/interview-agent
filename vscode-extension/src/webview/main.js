@@ -961,7 +961,7 @@
   }
 
   function isSupportedResumePath(path) {
-    return /\.(pdf|docx|txt|md|markdown)$/i.test(path);
+    return /\.(pdf|docx|txt|md|markdown|png|jpe?g|webp)$/i.test(path);
   }
 
   function readDroppedResume(file) {

@@ -40,7 +40,8 @@ fs.writeFileSync(
   [
     "PyMuPDF>=1.24",
     "numpy>=1.26",
-    "rapidocr-onnxruntime>=1.3",
+    "rapidocr>=3.9,<4",
+    "onnxruntime>=1.18",
     "",
   ].join("\n"),
   "utf-8",

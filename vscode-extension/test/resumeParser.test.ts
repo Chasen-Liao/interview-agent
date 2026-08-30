@@ -73,12 +73,15 @@ describe("parseResumeFile", () => {
     expect(path).toBe("D:\\project\\interview-agent\\resume.pdf");
   });
 
-  it("忽略非简历格式或非本地文件 Tab", () => {
+  it("接收图片简历，忽略非本地或不支持格式 Tab", () => {
     expect(getResumeFilePathFromTabInput({
       uri: { scheme: "file", fsPath: "D:\\project\\interview-agent\\image.png" },
-    })).toBe("");
+    })).toBe("D:\\project\\interview-agent\\image.png");
     expect(getResumeFilePathFromTabInput({
       uri: { scheme: "untitled", fsPath: "resume.md" },
+    })).toBe("");
+    expect(getResumeFilePathFromTabInput({
+      uri: { scheme: "file", fsPath: "D:\\project\\interview-agent\\resume.xlsx" },
     })).toBe("");
   });
 
@@ -165,6 +168,25 @@ describe("parseResumeFile", () => {
     await expect(parseResumeFile(file, { pdfText: async () => "" })).rejects.toThrow(
       "扫描版 PDF 需要 OCR 依赖",
     );
+  });
+
+  it("图片简历直接触发 OCR fallback", async () => {
+    const file = tempFile("resume.png", "not real image");
+    const statuses: string[] = [];
+
+    const result = await parseResumeFile(file, {
+      onStatus: (message) => statuses.push(message),
+      ocr: async () => "OCR Python Redis",
+    });
+
+    expect(result.content).toBe("OCR Python Redis");
+    expect(statuses).toContain("正在识别图片简历...");
+  });
+
+  it("图片简历缺 OCR 回调时提示安装 OCR 依赖", async () => {
+    const file = tempFile("resume.jpg", "not real image");
+
+    await expect(parseResumeFile(file)).rejects.toThrow("图片简历需要 OCR 依赖");
   });
 
   it("生成 Windows Terminal 依赖安装命令", () => {
